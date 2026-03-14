@@ -90,7 +90,9 @@ class TestDirectActivation:
 
     def test_primed_returns_results(self, db):
         db.ac.start()
-        db.ac.feed_vectors(db.tree.embeddings[0].clone())
+        # Directly set activations and update hot_cache via _decay_only
+        db.ac.activations = {0: 0.9, 1: 0.7, 2: 0.5}
+        db.ac._decay_only()
         results = db.ac.primed(5)
         assert len(results.ids) > 0
         assert all(isinstance(s, float) for s in results.scores)

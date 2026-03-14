@@ -16,6 +16,12 @@ from gitdb.types import (
     MergeResult, Results, StashEntry, VectorMeta,
 )
 from gitdb.ambient import EmiratiAC
+from gitdb.hooks import HookManager
+from gitdb.indexes import IndexManager
+from gitdb.schema import Schema, SchemaError
+from gitdb.snapshots import Snapshot
+from gitdb.watches import WatchManager
+from gitdb.backup import backup_full, backup_incremental, restore, verify, BackupManager
 from gitdb.working_tree import WorkingTree
 
 
@@ -75,6 +81,24 @@ class GitDB:
         # Emirati AC — spreading activation engine
         self.ac = EmiratiAC(self)
 
+        # Watches — change subscriptions
+        self.watches = WatchManager()
+
+        # Secondary indexes on metadata fields
+        self.indexes = IndexManager()
+
+        # In-memory snapshots
+        self._snapshots: Dict[str, Snapshot] = {}
+
+        # Hooks — pre/post event callbacks
+        self.hooks = HookManager()
+
+        # Schema enforcement on metadata
+        self._schema: Optional[Schema] = None
+        schema_path = self._gitdb_dir / "schema.json"
+        if schema_path.exists():
+            self._schema = Schema(json.loads(schema_path.read_text()))
+
         # If existing repo, load HEAD state
         if not self._is_new:
             self._load_head()
@@ -87,6 +111,7 @@ class GitDB:
 
         tensor, metadata = self._reconstruct(head_hash)
         self.tree.load_state(tensor, metadata)
+        self.indexes.rebuild(self.tree.metadata)
 
     def _reconstruct(self, commit_hash: str):
         """Reconstruct tensor + metadata at a given commit by replaying deltas."""
@@ -154,8 +179,13 @@ class GitDB:
             raise ValueError("Must provide embeddings or texts")
         if embeddings.dim() == 1:
             embeddings = embeddings.unsqueeze(0)
+        # Schema validation
+        self._validate_metadata(metadata)
         indices = self.tree.add(embeddings, documents, metadata, ids)
         self._staged_additions.extend(indices)
+        # Update secondary indexes
+        for idx in indices:
+            self.indexes.update(idx, self.tree.metadata[idx].metadata)
         # Feed AC
         if self.ac.running:
             self.ac.feed_vectors(embeddings)
@@ -515,6 +545,10 @@ class GitDB:
         if not self._has_staged_changes():
             raise ValueError("Nothing to commit")
 
+        # Fire pre-commit hook
+        if not self.hooks.fire("pre-commit", message=message, db=self):
+            raise ValueError("pre-commit hook rejected")
+
         # Build delta from staged changes
         delta = Delta()
         stats = CommitStats()
@@ -579,8 +613,22 @@ class GitDB:
         # Reflog
         self._reflog_append(f"commit: {message}", commit_hash)
 
+        # Fire watches
+        self.watches.check(
+            "commit",
+            branch=branch,
+            commit_hash=commit_hash,
+            message=message,
+            added_metadata=delta.add_metadata or [],
+            removed_metadata=delta.del_metadata or [],
+            modified_count=stats.modified,
+        )
+
         # Clear staging
         self._clear_staging()
+
+        # Fire post-commit hook
+        self.hooks.fire("post-commit", commit_hash=commit_hash, message=message, db=self)
 
         return commit_hash
 
@@ -985,8 +1033,18 @@ class GitDB:
         remotes = RemoteManager(self._gitdb_dir)
         remote = remotes.get(remote_name)
         branch = branch or self.refs.current_branch
+
+        # Fire pre-push hook
+        if not self.hooks.fire("pre-push", remote=remote_name, branch=branch, db=self):
+            raise ValueError("pre-push hook rejected")
+
         result = _push(self.objects, self.refs, remote, branch)
         self._reflog_append(f"push: {remote_name}/{branch}", self.refs.get_head_commit() or "empty")
+        self.watches.check("push", branch=branch)
+
+        # Fire post-push hook
+        self.hooks.fire("post-push", remote=remote_name, branch=branch, result=result, db=self)
+
         return result
 
     def pull(self, remote_name: str, branch: Optional[str] = None) -> Dict[str, Any]:
@@ -1005,6 +1063,7 @@ class GitDB:
                 self._clear_staging()
 
         self._reflog_append(f"pull: {remote_name}/{branch}", self.refs.get_head_commit() or "empty")
+        self.watches.check("pull", branch=branch)
         return result
 
     def fetch(self, remote_name: str, branch: Optional[str] = None) -> Dict[str, Any]:
@@ -1214,13 +1273,19 @@ class GitDB:
         if self._has_staged_changes():
             raise ValueError("Cannot merge with staged changes")
 
+        # Fire pre-merge hook
+        if not self.hooks.fire("pre-merge", branch=branch, strategy=strategy, db=self):
+            raise ValueError("pre-merge hook rejected")
+
         current_branch = self.refs.current_branch
         ours_hash = self.refs.get_head_commit()
         theirs_hash = self.refs.get_branch(branch)
         if theirs_hash is None:
             raise ValueError(f"Branch not found: {branch}")
         if ours_hash == theirs_hash:
-            return MergeResult(commit_hash=ours_hash, conflicts=[], strategy=strategy)
+            result = MergeResult(commit_hash=ours_hash, conflicts=[], strategy=strategy)
+            self.hooks.fire("post-merge", result=result, branch=branch, db=self)
+            return result
 
         # Fast-forward: if ours is an ancestor of theirs and strategy is union, just advance
         if strategy == "union" and self._is_ancestor(ours_hash, theirs_hash):
@@ -1228,7 +1293,9 @@ class GitDB:
             self.tree.load_state(tensor, metadata)
             self.refs.set_branch(current_branch, theirs_hash)
             self._reflog_append(f"merge (fast-forward): {branch}", theirs_hash)
-            return MergeResult(commit_hash=theirs_hash, conflicts=[], strategy="fast-forward")
+            result = MergeResult(commit_hash=theirs_hash, conflicts=[], strategy="fast-forward")
+            self.hooks.fire("post-merge", result=result, branch=branch, db=self)
+            return result
 
         # Find common ancestor (merge base)
         base_hash = self._find_merge_base(ours_hash, theirs_hash)
@@ -1265,7 +1332,9 @@ class GitDB:
             # Nothing new — fast-forward
             self.refs.set_branch(current_branch, theirs_hash)
             self._clear_staging()
-            return MergeResult(commit_hash=theirs_hash, conflicts=[], strategy="fast-forward")
+            result = MergeResult(commit_hash=theirs_hash, conflicts=[], strategy="fast-forward")
+            self.hooks.fire("post-merge", result=result, branch=branch, db=self)
+            return result
 
         msg = f"Merge branch '{branch}' into {current_branch}"
         commit_hash = self.commit(msg)
@@ -1277,12 +1346,17 @@ class GitDB:
         new_hash = self.objects.write_commit(commit)
         self.refs.set_branch(current_branch, new_hash)
 
-        return MergeResult(
+        result = MergeResult(
             commit_hash=new_hash,
             conflicts=conflicts,
             strategy=strategy,
             added=max(0, n_added),
         )
+
+        # Fire post-merge hook
+        self.hooks.fire("post-merge", result=result, branch=branch, db=self)
+
+        return result
 
     def _find_merge_base(self, hash_a: str, hash_b: str) -> Optional[str]:
         """Find common ancestor of two commits."""
@@ -2070,6 +2144,117 @@ class GitDB:
 
         return delta
 
+    # ─── Watches ──────────────────────────────────────────────
+
+    def watch(self, where: dict = None, on_change: callable = None, branch: str = None) -> int:
+        """Subscribe to changes. Returns watch_id.
+
+        Args:
+            where: Metadata filter — fires when matching data changes.
+            on_change: Callback(event, context) fired on match.
+            branch: Watch a specific branch instead of metadata patterns.
+        """
+        if branch is not None:
+            return self.watches.watch_branch(branch, on_change)
+        if where is None:
+            raise ValueError("Must specify where or branch")
+        return self.watches.watch(where, on_change)
+
+    def unwatch(self, watch_id: int) -> None:
+        """Remove a watch by ID."""
+        self.watches.unwatch(watch_id)
+
+    def watches_list(self) -> List[dict]:
+        """List all active watches."""
+        return self.watches.list_watches()
+
+    # ─── Secondary Indexes ───────────────────────────────────
+
+    def create_index(self, field: str, index_type: str = "hash") -> None:
+        """Create a secondary index on a metadata field."""
+        self.indexes.create_index(field, index_type)
+        # Rebuild from current metadata
+        self.indexes.rebuild(self.tree.metadata)
+
+    def drop_index(self, field: str) -> None:
+        """Drop a secondary index."""
+        self.indexes.drop_index(field)
+
+    def list_indexes(self) -> List[dict]:
+        """List all secondary indexes."""
+        return self.indexes.list_indexes()
+
+    # ─── Snapshots ───────────────────────────────────────────
+
+    def snapshot(self, name: str) -> "Snapshot":
+        """Create a cheap read-only frozen view of the current state.
+
+        Clones the embedding tensor, references metadata (read-only contract).
+        Snapshots are in-memory only, not persisted.
+        """
+        if name in self._snapshots:
+            raise ValueError(f"Snapshot already exists: {name}")
+        embeddings = self.tree.snapshot_tensor()
+        # Filter out tombstoned metadata
+        metadata = [m for i, m in enumerate(self.tree.metadata) if i not in self.tree.tombstones]
+        snap = Snapshot(
+            embeddings=embeddings,
+            metadata=list(metadata),  # shallow copy of list
+            name=name,
+            timestamp=time.time(),
+        )
+        self._snapshots[name] = snap
+        return snap
+
+    def snapshots(self) -> List[dict]:
+        """List all in-memory snapshots."""
+        return [
+            {"name": s.name, "size": s.size, "timestamp": s.timestamp}
+            for s in self._snapshots.values()
+        ]
+
+    def get_snapshot(self, name: str) -> "Snapshot":
+        """Get a snapshot by name."""
+        if name not in self._snapshots:
+            raise ValueError(f"Snapshot not found: {name}")
+        return self._snapshots[name]
+
+    # ─── Backup & Restore ─────────────────────────────────────
+
+    def backup(self, output_path: str, compression_level: int = 3) -> dict:
+        """Create a full backup of the store."""
+        manifest = backup_full(self._gitdb_dir, output_path, compression_level)
+        mgr = BackupManager(self._gitdb_dir)
+        mgr.record(manifest)
+        return manifest
+
+    def backup_incremental(self, output_path: str, compression_level: int = 3) -> dict:
+        """Create an incremental backup (only new objects since last backup)."""
+        mgr = BackupManager(self._gitdb_dir)
+        since = mgr.last_manifest()
+        manifest = backup_incremental(self._gitdb_dir, output_path, since, compression_level)
+        mgr.record(manifest)
+        return manifest
+
+    def backup_restore(self, backup_path: str, overwrite: bool = False) -> dict:
+        """Restore from a backup archive."""
+        manifest = restore(backup_path, str(self.path), overwrite)
+        # Reload state
+        head = self.refs.get_head_commit()
+        if head:
+            tensor, metadata = self._reconstruct(head)
+            self.tree.load_state(tensor, metadata)
+        return manifest
+
+    def backup_verify(self) -> dict:
+        """Verify integrity of the live store."""
+        return verify(self._gitdb_dir)
+
+    def backup_list(self) -> list:
+        """List all recorded backups."""
+        mgr = BackupManager(self._gitdb_dir)
+        return mgr.list_backups()
+
     def __repr__(self):
         head = self.refs.get_head_commit()
         short = head[:8] if head else "empty"
@@ -2080,3 +2265,119 @@ class GitDB:
 
     def __len__(self):
         return self.tree.size
+
+    # ─── Hooks ─────────────────────────────────────────────────
+
+    def hook(self, event: str, callback) -> None:
+        """Register a hook callback. Shorthand for db.hooks.register(...)."""
+        self.hooks.register(event, callback)
+
+    def unhook(self, event: str, callback) -> None:
+        """Unregister a hook callback. Shorthand for db.hooks.unregister(...)."""
+        self.hooks.unregister(event, callback)
+
+    # ─── Schema ────────────────────────────────────────────────
+
+    def set_schema(self, definition: Dict[str, Any]) -> None:
+        """Set a JSON Schema for metadata validation on add().
+
+        Pass None or {} to clear the schema.
+        """
+        if not definition:
+            self._schema = None
+            schema_path = self._gitdb_dir / "schema.json"
+            if schema_path.exists():
+                schema_path.unlink()
+            return
+        self._schema = Schema(definition)
+        schema_path = self._gitdb_dir / "schema.json"
+        schema_path.write_text(json.dumps(definition, indent=2))
+
+    def get_schema(self) -> Optional[Dict[str, Any]]:
+        """Return the current schema definition, or None."""
+        if self._schema is None:
+            return None
+        return self._schema.to_dict()
+
+    def _validate_metadata(self, metadata: Optional[List[Dict[str, Any]]]):
+        """Validate metadata list against schema. Raises SchemaError on failure."""
+        if self._schema is None or metadata is None:
+            return
+        for i, meta in enumerate(metadata):
+            errors = self._schema.validate(meta)
+            if errors:
+                raise SchemaError(f"Row {i}: {'; '.join(errors)}")
+
+    # ─── Transactions ──────────────────────────────────────────
+
+    def transaction(self) -> "Transaction":
+        """Context manager for atomic multi-operation batches.
+
+        Usage:
+            with db.transaction() as tx:
+                tx.add(texts=["new"])
+                tx.remove(where={"old": True})
+                # Either both happen or neither
+        """
+        return Transaction(self)
+
+
+class Transaction:
+    """Atomic multi-operation batch. Rolls back on exception.
+
+    Snapshots the staging area and working tree state on enter.
+    On success (__exit__ without exception), changes stick.
+    On failure, restores the snapshot.
+    """
+
+    def __init__(self, db: GitDB):
+        self._db = db
+
+    def __enter__(self):
+        db = self._db
+        # Snapshot staging state
+        self._snap_additions = list(db._staged_additions)
+        self._snap_deletions = list(db._staged_deletions)
+        self._snap_del_embeddings = list(db._staged_del_embeddings)
+        self._snap_del_metadata = list(db._staged_del_metadata)
+        self._snap_modifications = list(db._staged_modifications)
+        # Snapshot working tree
+        self._snap_embeddings = db.tree.embeddings.cpu().clone() if db.tree.embeddings is not None else None
+        self._snap_metadata = [
+            VectorMeta(id=m.id, document=m.document, metadata=dict(m.metadata))
+            for m in db.tree.metadata
+        ]
+        self._snap_tombstones = set(db.tree.tombstones)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            self._rollback()
+        return False  # don't suppress exceptions
+
+    def _rollback(self):
+        db = self._db
+        # Restore staging
+        db._staged_additions = self._snap_additions
+        db._staged_deletions = self._snap_deletions
+        db._staged_del_embeddings = self._snap_del_embeddings
+        db._staged_del_metadata = self._snap_del_metadata
+        db._staged_modifications = self._snap_modifications
+        # Restore working tree
+        if self._snap_embeddings is not None:
+            db.tree.embeddings = self._snap_embeddings.to(db.device)
+        else:
+            db.tree.embeddings = None
+        db.tree.metadata = self._snap_metadata
+        db.tree.tombstones = self._snap_tombstones
+
+    # ─── Proxied operations ──────────────────────────────────
+
+    def add(self, **kwargs) -> List[int]:
+        return self._db.add(**kwargs)
+
+    def remove(self, **kwargs) -> List[int]:
+        return self._db.remove(**kwargs)
+
+    def update_embeddings(self, ids, embeddings):
+        return self._db.update_embeddings(ids, embeddings)

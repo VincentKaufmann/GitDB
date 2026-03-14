@@ -2,7 +2,7 @@
 
 GPU-accelerated version-controlled vector database with structured queries, semantic search, and spreading activation.
 
-Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. Emirati AC for ambient intelligence.
+Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. Emirati AC for ambient intelligence. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, and schema enforcement. Native backup and restore.
 
 ## Install
 
@@ -128,6 +128,37 @@ db.pr_merge(pr.id)
 db.export_jsonl("backup.jsonl", include_embeddings=True)
 db.import_jsonl("data.jsonl", embed_texts=True)
 
+# ── FoundationDB-Inspired Features ─────────────────────
+# Hooks
+db.hook("pre-commit", lambda **ctx: True)
+db.hook("post-commit", lambda **ctx: print(ctx["commit_hash"]))
+
+# Transactions
+with db.transaction() as tx:
+    tx.add(texts=["doc1", "doc2"])
+    tx.remove(where={"old": True})
+
+# Watches
+db.watches.watch_branch("main", lambda event, ctx: notify(ctx))
+db.watches.watch({"category": "finance"}, lambda e, c: audit(c))
+
+# Secondary indexes
+db.create_index("category")
+db.create_index("score", index_type="range")
+
+# Schema enforcement
+db.set_schema({"required": ["category"], "properties": {"category": {"type": "string"}}})
+
+# Snapshots
+snap = db.snapshot("v1")
+snap.query(vector, k=10)
+
+# ── Backup & Restore ───────────────────────────────────
+db.backup("store.gitdb-backup")
+db.backup_incremental("store_incr.gitdb-incr")
+db.backup_verify()
+db.backup_list()
+
 # ── Emirati AC (Spreading Activation) ───────────────────
 db.ac.start()                        # Engine on, AC running
 results = db.ac.primed(10)           # Pre-ranked vectors (instant)
@@ -220,6 +251,162 @@ db.ac.drift()
 
 **Tuning knobs**: `POLL_INTERVAL`, `ACTIVATION_DECAY`, `SPREAD_FACTOR`, `NEIGHBOR_K`, `HOT_CACHE_SIZE` — all configurable on `db.ac`.
 
+## Hooks (FoundationDB-inspired)
+
+Pre/post event hooks for commit, merge, push, and drift. Pre-hooks can reject operations.
+
+```python
+# Reject commits without metadata
+def require_metadata(**ctx):
+    db = ctx["db"]
+    for meta in db.tree.metadata:
+        if not meta.metadata:
+            return False
+    return True
+
+db.hook("pre-commit", require_metadata)
+db.hook("post-commit", lambda **ctx: print(f"Committed: {ctx['commit_hash'][:8]}"))
+db.hook("pre-merge", lambda **ctx: ctx["branch"] != "protected")
+db.hook("on-drift", lambda **ctx: alert(ctx["magnitude"]))
+
+# List / clear
+db.hooks.list_hooks()
+db.hooks.clear("pre-commit")
+```
+
+**Events**: `pre-commit`, `post-commit`, `pre-merge`, `post-merge`, `pre-push`, `post-push`, `on-drift`
+
+## Transactions
+
+Atomic multi-operation batches. All succeed or all roll back.
+
+```python
+with db.transaction() as tx:
+    tx.add(texts=["new document"])
+    tx.remove(where={"status": "deprecated"})
+    tx.update_embeddings([0, 1], new_embeddings)
+    # If anything raises, everything rolls back
+```
+
+## Watches (Subscriptions)
+
+Subscribe to changes on branches or metadata patterns. Callbacks fire on commit, push, or pull.
+
+```python
+# Watch a branch
+wid = db.watches.watch_branch("production", lambda event, ctx: notify(ctx))
+
+# Watch metadata patterns
+wid = db.watches.watch(
+    {"category": "finance"},
+    lambda event, ctx: audit_log(ctx)
+)
+
+# List / unwatch
+db.watches.list_watches()
+db.watches.unwatch(wid)
+```
+
+## Secondary Indexes
+
+Hash indexes for exact lookups, range indexes for min/max queries. Rebuilt on load, updated incrementally.
+
+```python
+# Create indexes
+db.create_index("category")                  # Hash index (default)
+db.create_index("score", index_type="range") # Range index
+
+# Fast lookups (no scan)
+results = db.indexes.lookup("category", "finance")    # O(1) exact match
+results = db.indexes.range_lookup("score", 0.8, 1.0)  # O(log n) range
+
+# List / drop
+db.list_indexes()
+db.drop_index("category")
+```
+
+## Schema Enforcement
+
+JSON Schema validation on metadata. Rejects bad data at `add()` time.
+
+```python
+db.set_schema({
+    "required": ["category", "source"],
+    "properties": {
+        "category": {"type": "string", "enum": ["finance", "legal", "hr"]},
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "source": {"type": "string", "minLength": 1},
+        "tags": {"type": "array"},
+    },
+    "additionalProperties": False,
+})
+
+# This works:
+db.add(texts=["doc"], metadata=[{"category": "finance", "source": "bloomberg", "score": 0.9}])
+
+# This raises SchemaError:
+db.add(texts=["doc"], metadata=[{"category": "invalid"}])
+
+# Validate existing data
+db.get_schema()
+db.set_schema(None)  # Clear
+```
+
+**Supports**: `type` (string/number/integer/boolean/array/object/null), `required`, `enum`, `minimum`/`maximum`, `minLength`/`maxLength`, `pattern`, `additionalProperties`.
+
+## Snapshots
+
+Cheap read-only frozen views. Cloned tensor, referenced metadata. In-memory only.
+
+```python
+snap = db.snapshot("before_experiment")
+
+# Mutate the database freely...
+db.add(texts=["experimental data"])
+db.remove(where={"old": True})
+
+# Query the snapshot — unchanged
+results = snap.query(vector, k=10)
+results = snap.query_text("revenue", k=5)
+rows = snap.select(where={"category": "finance"})
+
+# List snapshots
+db.snapshots()
+```
+
+## Native Backup & Restore
+
+Full and incremental backups. tar.zst format. No external tools needed.
+
+```python
+# Full backup
+manifest = db.backup("my_store.gitdb-backup")
+
+# Incremental backup (only new objects since last backup)
+manifest = db.backup_incremental("my_store_incr.gitdb-incr")
+
+# List backups
+db.backup_list()
+
+# Verify store integrity
+result = db.backup_verify()
+# → {"valid": True, "commits_verified": 42, "total_objects_on_disk": 156}
+
+# Restore
+from gitdb.backup import restore
+restore("my_store.gitdb-backup", "/path/to/dest")
+```
+
+```bash
+gitdb backup full -o my_store.gitdb-backup
+gitdb backup incremental -o my_store_incr.gitdb-incr
+gitdb backup list
+gitdb backup verify
+gitdb restore my_store.gitdb-backup /path/to/dest
+```
+
+**Backup format**: `.gitdb-backup` (full) / `.gitdb-incr` (incremental) — tar archives compressed with zstd. Each backup includes a JSON manifest sidecar with checksums, object counts, branch refs, and timestamps.
+
 ## Semantic Git Operations
 
 Git operations that understand meaning, not just hashes.
@@ -285,41 +472,73 @@ gitdb re-embed [--model M]                    Re-embed all vectors
 gitdb semantic-blame <query>                  Blame by concept
 gitdb semantic-cherry-pick <branch> <query>   Cherry-pick by meaning
 gitdb ac [status|primed|drift|start|stop]     Emirati AC engine
+gitdb backup [full|incremental|list|verify]   Backup operations
+gitdb restore <backup> <dest> [--force]       Restore from backup
+gitdb snapshot [create|list|query]            In-memory snapshots
+gitdb hook [list|clear]                       Event hooks
+gitdb watch [list|clear]                      Change watches
+gitdb index [create|drop|list|lookup]         Secondary indexes
+gitdb schema [show|set|clear|validate]        Schema enforcement
 ```
 
 ## Architecture
 
 ```
-5,721 lines of Python across 12 modules. 177 tests.
+10,461 lines of Python across 18 modules. 296 tests.
 
-┌─────────────────────────────────────────────────────────┐
-│                    GitDB v0.3.0                         │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  JSONL/JSON ──→ Metadata Store       ← Structured DB   │
-│       │              │                  select, group-by│
-│       │         structured.py           $gt $in $regex  │
-│       ▼              │                                  │
-│  Embedding ──→ GPU Tensor Store      ← Vector DB       │
-│       │              │                  cosine sim      │
-│       │         working_tree.py         top-k search    │
-│       ▼              │                                  │
-│  Delta Chain ──→ Version History     ← Git Engine       │
-│       │              │                  branch, merge   │
-│       │         objects.py              blame, bisect   │
-│       ▼              │                  purge, push/pull│
-│  Emirati AC ──→ Hot Cache            ← Spreading        │
-│       │              │                  Activation       │
-│       │         ambient.py              multi-hop chains │
-│       ▼              │                  drift detection  │
-│  QUERY ──→ Boosted Results                              │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                    GitDB v0.4.0                               │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  JSONL/JSON ──→ Metadata Store       ← Structured DB        │
+│       │              │                  select, group-by     │
+│       │         structured.py           $gt $in $regex       │
+│       ▼              │                                       │
+│  Schema ────→ Validation             ← Schema Enforcement   │
+│       │              │                  JSON Schema subset   │
+│       │         schema.py               required, types,    │
+│       ▼              │                  enum, bounds, regex  │
+│  Embedding ──→ GPU Tensor Store      ← Vector DB            │
+│       │              │                  cosine sim           │
+│       │         working_tree.py         top-k search         │
+│       ▼              │                                       │
+│  Indexes ───→ Fast Lookups           ← Secondary Indexes    │
+│       │              │                  hash + range indexes │
+│       │         indexes.py              O(1) exact, O(logn) │
+│       ▼              │                                       │
+│  Delta Chain ──→ Version History     ← Git Engine            │
+│       │              │                  branch, merge        │
+│       │         objects.py              blame, bisect        │
+│       ▼              │                  purge, push/pull     │
+│  Hooks ────→ Event Callbacks         ← FoundationDB-style   │
+│       │              │                  pre/post commit/merge│
+│       │         hooks.py                reject operations    │
+│       ▼              │                                       │
+│  Watches ──→ Subscriptions           ← Change Notifications │
+│       │              │                  branch + metadata    │
+│       │         watches.py              pattern matching     │
+│       ▼              │                                       │
+│  Emirati AC ──→ Hot Cache            ← Spreading Activation │
+│       │              │                  multi-hop chains     │
+│       │         ambient.py              drift detection      │
+│       ▼              │                                       │
+│  Snapshots ──→ Frozen Views          ← Read-only Snapshots  │
+│       │              │                  zero-copy metadata   │
+│       │         snapshots.py            query, select        │
+│       ▼              │                                       │
+│  Backup ───→ tar.zst Archives        ← Native Backup        │
+│       │              │                  full + incremental   │
+│       │         backup.py               verify, restore     │
+│       ▼              │                                       │
+│  QUERY ──→ Boosted Results                                   │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
 
 Modules:
-  core.py          2,082 lines   Main interface (40+ methods)
-  cli.py           1,178 lines   CLI (50+ commands)
+  core.py          2,383 lines   Main interface (60+ methods)
+  cli.py           1,391 lines   CLI (65+ commands)
   ambient.py         459 lines   Emirati AC engine
+  backup.py          457 lines   Native backup & restore
   remote.py          387 lines   Push/pull/fetch (local + SSH)
   structured.py      322 lines   Query operators, aggregation
   delta.py           288 lines   Sparse tensor deltas + zstd
@@ -327,7 +546,12 @@ Modules:
   working_tree.py    208 lines   GPU-resident tensor + search
   embed.py           200 lines   Arctic + NV-EmbedQA
   pullrequest.py     197 lines   PR store with comments
+  indexes.py         138 lines   Secondary indexes (hash + range)
   types.py           127 lines   Data types
+  schema.py          125 lines   JSON Schema validation
+  watches.py         123 lines   Change subscriptions
+  snapshots.py       118 lines   Read-only frozen views
+  hooks.py            78 lines   Event hook system
 ```
 
 ## What Nothing Else Can Do
@@ -348,6 +572,13 @@ Modules:
 | Matryoshka dimensions | Yes | No | No | No | No | No |
 | GPU-accelerated | Yes | Cloud | Cloud | Yes | No | No |
 | Export/Import JSONL | Yes | No | Yes | Yes | Yes | No |
+| Pre/post event hooks | Yes | No | No | No | No | No |
+| Atomic transactions | Yes | No | No | No | No | Yes |
+| Change watches/subscriptions | Yes | No | No | No | No | No |
+| Secondary indexes | Yes | Cloud | Auto | Yes | No | Yes |
+| Schema enforcement | Yes | No | Yes | No | No | Yes |
+| Read-only snapshots | Yes | No | No | No | No | No |
+| Native backup/restore | Yes | Cloud | Cloud | Yes | No | No |
 
 ## LLM Integration
 
@@ -490,7 +721,10 @@ my_store/
       index.json              # Pull request store
     stash/
       0.pt, 0.meta.json      # Stashed states
+    backups/
+      history.json            # Backup history
     reflog                    # Append-only HEAD movement log
+    schema.json               # Schema definition (if set)
     notes/                    # Commit notes
     comments/                 # Commit comments
 ```
@@ -621,6 +855,13 @@ python -m pytest tests/test_remote.py      # 18 tests — push/pull/fetch/PRs
 python -m pytest tests/test_embed.py       # 11 unit + 18 integration
 python -m pytest tests/test_structured.py  # 45 tests — query engine
 python -m pytest tests/test_ambient.py     # 20 tests — Emirati AC
+python -m pytest tests/test_hooks.py       # 31 tests — hooks + integration
+python -m pytest tests/test_watches.py     # 14 tests — change subscriptions
+python -m pytest tests/test_schema.py      # 18 tests — schema enforcement
+python -m pytest tests/test_indexes.py     # 23 tests — secondary indexes
+python -m pytest tests/test_snapshots.py   # 17 tests — snapshots
+python -m pytest tests/test_transactions.py # 12 tests — atomic transactions
+python -m pytest tests/test_backup.py      # 9 tests — backup & restore
 
 # Run integration tests (requires model download)
 python -m pytest tests/test_embed.py -m slow
@@ -636,6 +877,14 @@ python -m pytest tests/test_embed.py -m slow
 | `test_embed.py` | 29 | model registry, similarity, embedding, normalization, semantic filter, Matryoshka, GitDB text add/query, re-embed, semantic blame |
 | `test_structured.py` | 45 | field resolution, all 13 operators, $and/$or/$not, select, group-by (5 agg functions), JSONL export/import, hybrid vector+structured queries |
 | `test_ambient.py` | 20 | lifecycle, direct activation, spreading, decay, drift detection, AC-boosted queries, hot cache |
+| `test_hooks.py` | 31 | register/unregister/fire, pre-hook rejection, post-hook fire, idempotent register, clear, integration with commit/merge |
+| `test_hooks_integration.py` | 5 | pre-commit reject/accept, post-commit fires, pre-merge reject, post-merge fires |
+| `test_watches.py` | 14 | watch/unwatch, branch watches, where watches, fire on commit, list, ID increment |
+| `test_schema.py` | 18 | required fields, all type checks, enum, bounds, length, pattern, additionalProperties, GitDB integration, persistence |
+| `test_indexes.py` | 23 | hash index create/rebuild/lookup/update, range index lookup, drop, list, duplicate create, GitDB integration |
+| `test_snapshots.py` | 17 | create, query, select, isolation, duplicate name, get/list, repr, tombstone handling |
+| `test_transactions.py` | 12 | commit, rollback on error, remove, nested operations, edge cases |
+| `test_backup.py` | 9 | full backup, manifest sidecar, history, incremental, restore, restore+query, overwrite, verify valid/corrupt |
 
 ## Requirements
 

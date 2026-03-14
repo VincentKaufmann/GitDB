@@ -858,6 +858,172 @@ def cmd_comment(args):
             print(f"  {ts}  {c['message']}")
 
 
+def cmd_watch(args):
+    db = load_db(args)
+    if args.action == "list":
+        watches = db.watches.list_watches()
+        if not watches:
+            print("No active watches")
+            return
+        for w in watches:
+            if w["type"] == "branch":
+                print(f"  #{w['id']}  branch={w['branch']}")
+            else:
+                print(f"  #{w['id']}  where={json.dumps(w['where'])}")
+    elif args.action == "clear":
+        # Unwatch all
+        for w in db.watches.list_watches():
+            db.watches.unwatch(w["id"])
+        print("All watches cleared")
+
+
+def cmd_index(args):
+    db = load_db(args)
+    if args.action == "create":
+        idx_type = args.type or "hash"
+        db.create_index(args.field, idx_type)
+        print(f"Created {idx_type} index on '{args.field}'")
+    elif args.action == "drop":
+        db.drop_index(args.field)
+        print(f"Dropped index on '{args.field}'")
+    elif args.action == "list":
+        indexes = db.list_indexes()
+        if not indexes:
+            print("No indexes")
+            return
+        for idx in indexes:
+            print(f"  {idx['field']:20s}  {idx['type']:6s}  {idx['entries']:>6d} entries")
+    elif args.action == "lookup":
+        if not args.field or not args.value:
+            print("Provide --field and --value", file=sys.stderr)
+            sys.exit(1)
+        # Try to parse value as JSON, fallback to string
+        try:
+            val = json.loads(args.value)
+        except (json.JSONDecodeError, TypeError):
+            val = args.value
+        results = db.indexes.lookup(args.field, val)
+        print(f"{len(results)} matches: {results}")
+
+
+def cmd_backup(args):
+    db = load_db(args)
+    if args.action == "full":
+        output = args.output or f"backup_{int(time.time())}.gitdb-backup"
+        manifest = db.backup(output)
+        print(f"Full backup: {output}")
+        print(f"  Objects: {manifest['object_count']}, Size: {manifest['backup_size_bytes']} bytes")
+    elif args.action == "incremental":
+        output = args.output or f"backup_{int(time.time())}.gitdb-incr"
+        manifest = db.backup_incremental(output)
+        print(f"Incremental backup: {output}")
+        print(f"  New objects: {manifest.get('new_objects', 0)}, Size: {manifest['backup_size_bytes']} bytes")
+    elif args.action == "list":
+        backups = db.backup_list()
+        if not backups:
+            print("No backups recorded")
+            return
+        for b in backups:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(b.get("timestamp", 0)))
+            print(f"  {ts}  {b.get('type', '?'):12s}  {b.get('size', 0):>10d} bytes  {b.get('path', '?')}")
+    elif args.action == "verify":
+        result = db.backup_verify()
+        if result["valid"]:
+            print(f"Store is valid. {result['commits_verified']} commits verified, {result['total_objects_on_disk']} objects on disk.")
+        else:
+            print("ISSUES FOUND:")
+            for issue in result["issues"]:
+                print(f"  - {issue}")
+
+
+def cmd_restore(args):
+    from gitdb import GitDB
+    from gitdb.backup import restore
+    manifest = restore(args.backup, args.dest, overwrite=args.force)
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(manifest.get("timestamp", 0)))
+    print(f"Restored {manifest.get('type', '?')} backup from {ts}")
+    print(f"  Objects: {manifest.get('object_count', '?')}, Dest: {args.dest}")
+
+
+def cmd_snapshot(args):
+    db = load_db(args)
+    if args.action == "create":
+        snap = db.snapshot(args.name)
+        print(f"Snapshot '{snap.name}': {snap.size} vectors")
+    elif args.action == "list":
+        snaps = db.snapshots()
+        if not snaps:
+            print("No snapshots")
+            return
+        for s in snaps:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(s["timestamp"]))
+            print(f"  {s['name']:20s}  {s['size']:>6d} vectors  {ts}")
+    elif args.action == "query":
+        snap = db.get_snapshot(args.name)
+        if args.text:
+            results = snap.query_text(args.text, k=args.k or 10)
+        elif args.vector:
+            vec = torch.load(args.vector, weights_only=True)
+            results = snap.query(vec, k=args.k or 10)
+        else:
+            print("Provide --text or --vector", file=sys.stderr)
+            sys.exit(1)
+        for i, (vid, score) in enumerate(zip(results.ids, results.scores)):
+            doc = results.documents[i] or ""
+            print(f"  {score:.4f}  {vid[:16]}  {doc[:60]}")
+
+
+def cmd_hook(args):
+    db = load_db(args)
+    if args.action == "list":
+        hooks = db.hooks.list_hooks()
+        if not hooks:
+            print("No hooks registered")
+            return
+        for event, callbacks in hooks.items():
+            for cb in callbacks:
+                print(f"  {event:16s}  {cb}")
+    elif args.action == "clear":
+        event = args.event if hasattr(args, 'event') and args.event else None
+        db.hooks.clear(event)
+        print(f"Cleared hooks" + (f" for {event}" if event else ""))
+
+
+def cmd_schema(args):
+    db = load_db(args)
+    if args.action == "show":
+        schema = db.get_schema()
+        if schema:
+            print(json.dumps(schema, indent=2))
+        else:
+            print("No schema set")
+    elif args.action == "set":
+        if not args.file:
+            print("Provide --file with JSON schema", file=sys.stderr)
+            sys.exit(1)
+        definition = json.loads(Path(args.file).read_text())
+        db.set_schema(definition)
+        print(f"Schema set from {args.file}")
+    elif args.action == "clear":
+        db.set_schema(None)
+        print("Schema cleared")
+    elif args.action == "validate":
+        schema = db.get_schema()
+        if not schema:
+            print("No schema set")
+            return
+        from gitdb.schema import Schema
+        s = Schema(schema)
+        errors_total = 0
+        for i, m in enumerate(db.tree.metadata):
+            errors = s.validate(m.metadata)
+            if errors:
+                errors_total += len(errors)
+                print(f"  Row {i} ({m.id}): {'; '.join(errors)}")
+        if errors_total == 0:
+            print(f"All {len(db.tree.metadata)} rows pass schema validation")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="gitdb",
@@ -1113,6 +1279,46 @@ def main():
     p.add_argument("--threshold", type=float, default=0.5, help="Min similarity")
     p.add_argument("--model", help="Embedding model")
 
+    # backup
+    p = sub.add_parser("backup", help="Backup operations")
+    p.add_argument("action", choices=["full", "incremental", "list", "verify"])
+    p.add_argument("--output", "-o", help="Output file path")
+
+    # restore
+    p = sub.add_parser("restore", help="Restore from backup")
+    p.add_argument("backup", help="Backup file path")
+    p.add_argument("dest", help="Destination directory")
+    p.add_argument("--force", "-f", action="store_true", help="Overwrite existing")
+
+    # snapshot
+    p = sub.add_parser("snapshot", help="In-memory snapshots")
+    p.add_argument("action", choices=["create", "list", "query"])
+    p.add_argument("--name", help="Snapshot name")
+    p.add_argument("--text", help="Query text (for query action)")
+    p.add_argument("--vector", help="Query vector file (for query action)")
+    p.add_argument("-k", type=int, help="Top-K results")
+
+    # hook
+    p = sub.add_parser("hook", help="Event hooks")
+    p.add_argument("action", choices=["list", "clear"])
+    p.add_argument("--event", help="Event name (for clear)")
+
+    # watch
+    p = sub.add_parser("watch", help="Change watches")
+    p.add_argument("action", choices=["list", "clear"])
+
+    # index
+    p = sub.add_parser("index", help="Secondary indexes")
+    p.add_argument("action", choices=["create", "drop", "list", "lookup"])
+    p.add_argument("--field", help="Field name")
+    p.add_argument("--type", choices=["hash", "range"], help="Index type")
+    p.add_argument("--value", help="Lookup value")
+
+    # schema
+    p = sub.add_parser("schema", help="Schema enforcement")
+    p.add_argument("action", choices=["show", "set", "clear", "validate"])
+    p.add_argument("--file", help="Schema JSON file (for set)")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -1165,6 +1371,13 @@ def main():
         "re-embed": cmd_re_embed,
         "semantic-blame": cmd_semantic_blame,
         "semantic-cherry-pick": cmd_semantic_cherry_pick,
+        "backup": cmd_backup,
+        "restore": cmd_restore,
+        "snapshot": cmd_snapshot,
+        "hook": cmd_hook,
+        "watch": cmd_watch,
+        "index": cmd_index,
+        "schema": cmd_schema,
     }
 
     fn = dispatch.get(args.command)
