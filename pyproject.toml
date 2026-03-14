@@ -1,18 +1,38 @@
 [project]
-name = "gitdb"
-version = "0.1.0"
+name = "gitdb-vectors"
+version = "0.6.0"
 description = "GPU-accelerated version-controlled vector database"
+readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.10"
+authors = [{name = "Vincent Kaufmann"}]
+keywords = ["vector-database", "gpu", "version-control", "embeddings", "semantic-search"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "torch>=2.0",
     "zstandard>=0.21",
 ]
+
+[project.urls]
+Homepage = "https://github.com/VincentKaufmann/GitDB"
+Repository = "https://github.com/VincentKaufmann/GitDB"
 
 [project.scripts]
 gitdb = "gitdb.cli:main"
 
 [project.optional-dependencies]
 embed = ["sentence-transformers>=2.2"]
+ingest = ["pyarrow", "pymupdf"]
 dev = ["pytest>=7.0", "sentence-transformers>=2.2"]
 
 [build-system]
