@@ -1,6 +1,6 @@
 [project]
 name = "gitdb-vectors"
-version = "0.6.0"
+version = "0.7.0"
 description = "GPU-accelerated version-controlled vector database"
 readme = "README.md"
 license = {text = "MIT"}
@@ -33,6 +33,7 @@ gitdb = "gitdb.cli:main"
 [project.optional-dependencies]
 embed = ["sentence-transformers>=2.2"]
 ingest = ["pyarrow", "pymupdf"]
+cloud = ["boto3", "google-cloud-storage", "azure-storage-blob", "paramiko"]
 dev = ["pytest>=7.0", "sentence-transformers>=2.2"]
 
 [build-system]

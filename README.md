@@ -13,7 +13,7 @@ GPU-accelerated version-controlled vector database. No server. No Docker. No con
 7. **CLI-first** — `gitdb init && gitdb add --text "doc" && gitdb commit -m "init"`. Works from terminal like git.
 8. **Embedded** — no server, no Docker, no config. `pip install gitdb` and go.
 
-Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. CEPH CRUSH placement. P2P distributed. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, schema enforcement. Native backup/restore. Universal ingest (SQLite, MongoDB, CSV, Parquet, PDF, text).
+Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. CEPH CRUSH placement. P2P distributed. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, schema enforcement. Native backup/restore. Universal ingest (SQLite, MongoDB, CSV, Parquet, PDF, text, S3, GCS, Azure, MinIO, SFTP).
 
 ## Install
 
@@ -558,26 +558,45 @@ db.ingest("notes.md")
 
 # Entire directory — batch ingest everything
 db.ingest("./documents/", pattern="*.pdf", recursive=True)
+
+# Cloud storage — S3, MinIO, GCS, Azure, SFTP
+db.ingest("s3://my-bucket/data/")
+db.ingest("gs://my-bucket/embeddings/")
+db.ingest("az://my-container/exports/")
+db.ingest("minio://localhost:9000/bucket/prefix/")
+db.ingest("sftp://user@host/path/to/files/")
 ```
 
 ```bash
-# CLI
+# CLI — local files
 gitdb ingest legacy.db                       # SQLite
 gitdb ingest dump.jsonl                      # MongoDB
 gitdb ingest data.csv --text-column content  # CSV with explicit text column
 gitdb ingest report.pdf --chunk-size 1000    # PDF with custom chunking
 gitdb ingest ./docs/ --pattern "*.md"        # Directory batch
 gitdb ingest data.tsv --no-commit            # Ingest without auto-commit
+
+# CLI — cloud storage
+gitdb ingest s3://my-bucket/data/            # S3
+gitdb ingest gs://my-bucket/prefix/          # Google Cloud Storage
+gitdb ingest az://container/path/            # Azure Blob
+gitdb ingest minio://host:9000/bucket/       # MinIO
+gitdb ingest sftp://user@host/path/          # SFTP
 ```
 
-| Format | Extensions | Features |
-|--------|-----------|----------|
+| Format | Extensions / Schemes | Features |
+|--------|---------------------|----------|
 | SQLite | `.db`, `.sqlite`, `.sqlite3` | All tables, auto-detect text columns, preserve all metadata |
 | MongoDB | `.json`, `.jsonl`, `.bson` | Extended JSON (`$oid`, `$date`), nested object flattening |
 | CSV/TSV | `.csv`, `.tsv`, `.tab` | Auto-detect delimiter + text column, type inference |
 | Parquet | `.parquet`, `.pq` | Via pyarrow, auto-detect text column |
 | PDF | `.pdf` | Via pymupdf/PyPDF2, sentence-boundary chunking with overlap |
 | Text | `.txt`, `.md`, `.rst`, `.log` | Chunk with configurable size and overlap |
+| S3 | `s3://` | boto3, recursive prefix listing, auto-detect file types |
+| GCS | `gs://` | google-cloud-storage, recursive blob listing |
+| Azure Blob | `az://` | azure-storage-blob, connection string auth |
+| MinIO | `minio://` | S3-compatible with custom endpoint |
+| SFTP | `sftp://` | paramiko, recursive directory listing, key or password auth |
 
 ## Semantic Git Operations
 
@@ -657,10 +676,10 @@ gitdb ingest <file|dir> [--text-column C]     Universal ingest
 ## Architecture
 
 ```
-13,150 lines of Python across 21 modules. 394 tests.
+13,500 lines of Python across 22 modules. 437 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
-│                    GitDB v0.6.0                               │
+│                    GitDB v0.7.0                               │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  P2P Layer ──→ Distributed Cluster   ← P2P Network          │
@@ -714,6 +733,10 @@ gitdb ingest <file|dir> [--text-column C]     Universal ingest
 │  Ingest ───→ Universal Import         ← Auto-detect         │
 │       │              │                  SQLite, MongoDB      │
 │       │         ingest.py               CSV, Parquet, PDF   │
+│       │              │                                       │
+│  Cloud ────→ S3/GCS/Azure/MinIO/SFTP  ← Cloud Transport     │
+│       │              │                  stream + ingest      │
+│       │         cloud_ingest.py         temp + cleanup       │
 │       ▼              │                                       │
 │  QUERY ──→ Boosted Results                                   │
 │                                                              │
@@ -721,7 +744,7 @@ gitdb ingest <file|dir> [--text-column C]     Universal ingest
 
 Modules:
   core.py          2,383 lines   Main interface (60+ methods)
-  cli.py           1,440 lines   CLI (66+ commands)
+  cli.py           1,455 lines   CLI (67+ commands)
   distributed.py     765 lines   P2P distributed layer
   crush.py           600 lines   CEPH CRUSH algorithm
   ambient.py         459 lines   Emirati AC engine
@@ -739,6 +762,7 @@ Modules:
   watches.py         123 lines   Change subscriptions
   snapshots.py       118 lines   Read-only frozen views
   ingest.py          909 lines   Universal ingest (6 formats)
+  cloud_ingest.py    349 lines   Cloud storage transport (S3/GCS/Azure/MinIO/SFTP)
   hooks.py            78 lines   Event hook system
 ```
 
@@ -772,6 +796,7 @@ Modules:
 | Scatter/gather distributed query | Yes | Cloud | Cloud | Cloud | No | No |
 | Gossip topology discovery | Yes | No | No | No | No | No |
 | Universal ingest (6 formats) | Yes | No | No | No | No | No |
+| Cloud ingest (S3/GCS/Azure/MinIO/SFTP) | Yes | No | No | No | No | No |
 
 ## LLM Integration
 
@@ -1064,6 +1089,7 @@ python -m pytest tests/test_backup.py      # 9 tests — backup & restore
 python -m pytest tests/test_crush.py       # 32 tests — CRUSH algorithm
 python -m pytest tests/test_distributed.py # 33 tests — P2P distributed
 python -m pytest tests/test_ingest.py      # 33 tests — universal ingest
+python -m pytest tests/test_cloud_ingest.py # 43 tests — cloud storage ingest
 
 # Run integration tests (requires model download)
 python -m pytest tests/test_embed.py -m slow
@@ -1090,6 +1116,7 @@ python -m pytest tests/test_embed.py -m slow
 | `test_crush.py` | 32 | CRUSH map CRUD, straw2 determinism/weight/uniformity, single/multi-replica placement, host separation, down devices, router place/batch/distribution/rebalance, 144-device cluster |
 | `test_distributed.py` | 33 | peer registry CRUD/persistence, CRUSH routing (single/multi/deterministic/batch/uniform), distributed add with outbox, local + distributed query with dedup, rebalance planning, gossip discovery, sync |
 | `test_ingest.py` | 33 | SQLite (single/multi-table, auto-detect text, all metadata), MongoDB (JSON/JSONL, extended JSON, nested flattening), CSV (auto-detect, explicit column, TSV), text chunking (overlap, sentence boundaries), universal auto-detect, directory batch, helpers |
+| `test_cloud_ingest.py` | 43 | URI parsing (all 5 schemes), is_cloud_uri detection, mocked S3/GCS/Azure/SFTP transports, error handling (missing deps, bad URIs), temp file cleanup, aggregate result counting |
 
 ## Requirements
 

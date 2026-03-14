@@ -2315,16 +2315,20 @@ class GitDB:
 
         Supports: SQLite (.db, .sqlite), MongoDB (.json, .jsonl, .bson),
         CSV/TSV (.csv, .tsv), Parquet (.parquet), PDF (.pdf),
-        Text (.txt, .md, .rst, .log), and directories.
+        Text (.txt, .md, .rst, .log), directories, and cloud storage
+        (s3://, gs://, az://, minio://, sftp://).
 
         Args:
-            path: File or directory path to ingest.
+            path: File path, directory path, or cloud URI to ingest.
             **kwargs: Passed to the appropriate ingest function
                       (text_column, chunk_size, chunk_overlap, etc.)
 
         Returns:
             Ingest result dict with counts.
         """
+        from gitdb.cloud_ingest import is_cloud_uri, ingest_cloud
+        if is_cloud_uri(path):
+            return ingest_cloud(self, path, **kwargs)
         from gitdb.ingest import ingest_file, ingest_directory
         from pathlib import Path as P
         if P(path).is_dir():

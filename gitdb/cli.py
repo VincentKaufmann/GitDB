@@ -992,8 +992,22 @@ def cmd_hook(args):
 def cmd_ingest(args):
     db = load_db(args)
     from gitdb.ingest import ingest_file, ingest_directory, detect_type, SUPPORTED_EXTENSIONS
+    from gitdb.cloud_ingest import is_cloud_uri, ingest_cloud
 
     target = args.target
+
+    if is_cloud_uri(target):
+        result = ingest_cloud(
+            db, target,
+            embed=not args.no_embed,
+            autocommit=not args.no_commit,
+        )
+        print(f"Ingested {result['files_ingested']} files from {result['scheme']}://, {result['total_rows']} total rows")
+        for r in result.get("results", []):
+            key = r.get("_cloud_key", "?")
+            count = r.get("rows", r.get("chunks", r.get("documents", 0)))
+            print(f"  ✓ {key}: {count}")
+        return
 
     if os.path.isdir(target):
         result = ingest_directory(
