@@ -1,0 +1,20 @@
+[project]
+name = "gitdb"
+version = "0.1.0"
+description = "GPU-accelerated version-controlled vector database"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "zstandard>=0.21",
+]
+
+[project.scripts]
+gitdb = "gitdb.cli:main"
+
+[project.optional-dependencies]
+embed = ["sentence-transformers>=2.2"]
+dev = ["pytest>=7.0", "sentence-transformers>=2.2"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
