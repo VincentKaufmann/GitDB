@@ -2,7 +2,7 @@
 
 GPU-accelerated version-controlled vector database with structured queries, semantic search, and spreading activation.
 
-Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. Emirati AC for ambient intelligence. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, and schema enforcement. Native backup and restore.
+Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. Emirati AC for ambient intelligence. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, and schema enforcement. CEPH CRUSH placement. P2P distributed. Native backup and restore.
 
 ## Install
 
@@ -158,6 +158,14 @@ db.backup("store.gitdb-backup")
 db.backup_incremental("store_incr.gitdb-incr")
 db.backup_verify()
 db.backup_list()
+
+# ── P2P Distributed ────────────────────────────────────
+from gitdb.distributed import DistributedGitDB, Peer
+ddb = DistributedGitDB(db, self_name="laptop")
+ddb.add_peer(Peer("spark", "user@spark", shard_path="~/shard", weight=2.0))
+ddb.add(texts=["doc1"], replicas=2)        # CRUSH-routed
+ddb.query_distributed(vector, k=10)        # Scatter/gather
+ddb.sync()                                 # Push/pull all peers
 
 # ── Emirati AC (Spreading Activation) ───────────────────
 db.ac.start()                        # Engine on, AC running
@@ -407,6 +415,106 @@ gitdb restore my_store.gitdb-backup /path/to/dest
 
 **Backup format**: `.gitdb-backup` (full) / `.gitdb-incr` (incremental) — tar archives compressed with zstd. Each backup includes a JSON manifest sidecar with checksums, object counts, branch refs, and timestamps.
 
+## CRUSH Algorithm (CEPH-style Placement)
+
+Deterministic data placement across shards. No central lookup table — any node computes where any vector lives.
+
+```python
+from gitdb.crush import CRUSHMap, CRUSHRouter
+
+# Define cluster topology
+crush = CRUSHMap()
+crush.add_device("ssd_1", weight=2.0, location={"host": "node1", "rack": "rack1"})
+crush.add_device("ssd_2", weight=2.0, location={"host": "node1", "rack": "rack1"})
+crush.add_device("ssd_3", weight=1.0, location={"host": "node2", "rack": "rack2"})
+crush.add_device("ssd_4", weight=1.0, location={"host": "node2", "rack": "rack2"})
+
+router = CRUSHRouter(crush)
+
+# Where should this vector go? Deterministic — same answer every time.
+router.place("vector_abc123", replicas=2)
+# → ["ssd_1", "ssd_3"]  (different racks for fault tolerance)
+
+# Add a node — only ~1/N data moves
+crush.add_device("ssd_5", weight=1.0, location={"host": "node3", "rack": "rack3"})
+plan = router.rebalance_plan(old_map)
+# → {"moves": 200, "total": 1000, "percent": 20.0}
+
+# Check distribution uniformity
+router.distribution(sample_keys, replicas=2)
+# → {"ssd_1": 510, "ssd_2": 498, "ssd_3": 251, "ssd_4": 241}  (weight-proportional)
+```
+
+**Straw2 bucket selection** — the same algorithm CEPH uses. Deterministic, weight-proportional, minimal disruption on topology changes.
+
+## P2P Distributed Mode
+
+Every node is equal. No coordinator. CRUSH routes vectors, SSH transports them, git-style merge handles conflicts.
+
+```python
+from gitdb import GitDB
+from gitdb.distributed import DistributedGitDB, Peer
+
+db = GitDB("my_shard", dim=1024, device="mps")
+ddb = DistributedGitDB(db, self_name="laptop")
+
+# ── Add peers (SSH transport, like git remotes) ────────
+ddb.add_peer(Peer("spark", "xentureon@100.89.91.91",
+                   shard_path="~/stores/vectors",
+                   weight=2.0,  # DGX gets 2x the data
+                   location={"host": "spark", "rack": "home"}))
+
+ddb.add_peer(Peer("cloud", "ubuntu@ec2.example.com",
+                   shard_path="/data/vectors",
+                   weight=1.0,
+                   location={"host": "cloud", "rack": "aws"}))
+
+# ── Add vectors — CRUSH routes to correct shards ──────
+ddb.add(texts=["quarterly report", "NDA draft"], replicas=2)
+ddb.commit("Add documents")
+
+# ── Query — scatter to all shards, merge top-k ────────
+results = ddb.query_distributed(vector, k=10)
+
+# ── Sync — push outbox, pull updates ──────────────────
+ddb.sync()                  # All peers
+ddb.sync("spark")           # Just Spark
+
+# ── Rebalance — when topology changes ─────────────────
+ddb.add_peer(Peer("gpu_box", "user@gpu.local", weight=3.0))
+plan = ddb.rebalance(dry_run=True)
+# → {"foreign_count": 150, "should_migrate": {"gpu_box": [...]}}
+ddb.rebalance(dry_run=False)  # Actually queue migrations
+
+# ── Gossip — peers discover each other ────────────────
+other_topology = other_node.gossip_map()
+ddb.apply_gossip(other_topology)  # Merges peer lists
+
+# ── Status ────────────────────────────────────────────
+ddb.status()
+# → {"self": "laptop", "peers_total": 3, "peers_active": 2,
+#    "local_vectors": 5000, "pending_outbox": 42}
+```
+
+```
+Node A (laptop)          Node B (Spark)         Node C (cloud)
+┌─────────────┐         ┌─────────────┐        ┌─────────────┐
+│ GitDB shard │◄──SSH──►│ GitDB shard │◄──SSH──►│ GitDB shard │
+│ CRUSH map   │  push/  │ CRUSH map   │  push/  │ CRUSH map   │
+│ Peer list   │  pull   │ Peer list   │  pull   │ Peer list   │
+└─────────────┘         └─────────────┘        └─────────────┘
+     All nodes have the same CRUSH map.
+     Any node can route any vector. No coordinator.
+```
+
+**How it works:**
+- **Add**: CRUSH computes placement → vectors stored locally + queued in outbox for remote peers
+- **Query**: scatter query to all active peers via SSH → merge + dedup results → return top-k
+- **Sync**: push outbox via existing git remotes → pull updates from peers
+- **Join**: new node gets CRUSH map → rebalance moves ~1/N data
+- **Leave**: mark node down → replicas re-placed to surviving nodes
+- **Conflict**: git-style branch/merge semantics handle divergence
+
 ## Semantic Git Operations
 
 Git operations that understand meaning, not just hashes.
@@ -484,12 +592,20 @@ gitdb schema [show|set|clear|validate]        Schema enforcement
 ## Architecture
 
 ```
-10,461 lines of Python across 18 modules. 296 tests.
+12,550 lines of Python across 20 modules. 361 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
-│                    GitDB v0.4.0                               │
+│                    GitDB v0.5.0                               │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
+│  P2P Layer ──→ Distributed Cluster   ← P2P Network          │
+│       │              │                  gossip, sync         │
+│       │         distributed.py          scatter/gather query │
+│       ▼              │                                       │
+│  CRUSH ────→ Vector Placement        ← CEPH Algorithm       │
+│       │              │                  straw2 selection     │
+│       │         crush.py                deterministic routing│
+│       ▼              │                                       │
 │  JSONL/JSON ──→ Metadata Store       ← Structured DB        │
 │       │              │                  select, group-by     │
 │       │         structured.py           $gt $in $regex       │
@@ -537,6 +653,8 @@ gitdb schema [show|set|clear|validate]        Schema enforcement
 Modules:
   core.py          2,383 lines   Main interface (60+ methods)
   cli.py           1,391 lines   CLI (65+ commands)
+  distributed.py     765 lines   P2P distributed layer
+  crush.py           600 lines   CEPH CRUSH algorithm
   ambient.py         459 lines   Emirati AC engine
   backup.py          457 lines   Native backup & restore
   remote.py          387 lines   Push/pull/fetch (local + SSH)
@@ -579,6 +697,10 @@ Modules:
 | Schema enforcement | Yes | No | Yes | No | No | Yes |
 | Read-only snapshots | Yes | No | No | No | No | No |
 | Native backup/restore | Yes | Cloud | Cloud | Yes | No | No |
+| CRUSH placement algorithm | Yes | No | No | No | No | No |
+| P2P distributed (no coordinator) | Yes | Cloud | Cloud | Cloud | No | No |
+| Scatter/gather distributed query | Yes | Cloud | Cloud | Cloud | No | No |
+| Gossip topology discovery | Yes | No | No | No | No | No |
 
 ## LLM Integration
 
@@ -723,6 +845,12 @@ my_store/
       0.pt, 0.meta.json      # Stashed states
     backups/
       history.json            # Backup history
+    distributed/
+      peers.json              # P2P peer registry
+      crush_map.json          # CRUSH topology + rules
+      outbox/                 # Queued vectors for remote peers
+        spark.jsonl
+        cloud.jsonl
     reflog                    # Append-only HEAD movement log
     schema.json               # Schema definition (if set)
     notes/                    # Commit notes
@@ -862,6 +990,8 @@ python -m pytest tests/test_indexes.py     # 23 tests — secondary indexes
 python -m pytest tests/test_snapshots.py   # 17 tests — snapshots
 python -m pytest tests/test_transactions.py # 12 tests — atomic transactions
 python -m pytest tests/test_backup.py      # 9 tests — backup & restore
+python -m pytest tests/test_crush.py       # 32 tests — CRUSH algorithm
+python -m pytest tests/test_distributed.py # 33 tests — P2P distributed
 
 # Run integration tests (requires model download)
 python -m pytest tests/test_embed.py -m slow
@@ -885,6 +1015,8 @@ python -m pytest tests/test_embed.py -m slow
 | `test_snapshots.py` | 17 | create, query, select, isolation, duplicate name, get/list, repr, tombstone handling |
 | `test_transactions.py` | 12 | commit, rollback on error, remove, nested operations, edge cases |
 | `test_backup.py` | 9 | full backup, manifest sidecar, history, incremental, restore, restore+query, overwrite, verify valid/corrupt |
+| `test_crush.py` | 32 | CRUSH map CRUD, straw2 determinism/weight/uniformity, single/multi-replica placement, host separation, down devices, router place/batch/distribution/rebalance, 144-device cluster |
+| `test_distributed.py` | 33 | peer registry CRUD/persistence, CRUSH routing (single/multi/deterministic/batch/uniform), distributed add with outbox, local + distributed query with dedup, rebalance planning, gossip discovery, sync |
 
 ## Requirements
 
