@@ -989,6 +989,62 @@ def cmd_hook(args):
         print(f"Cleared hooks" + (f" for {event}" if event else ""))
 
 
+def cmd_ingest(args):
+    db = load_db(args)
+    from gitdb.ingest import ingest_file, ingest_directory, detect_type, SUPPORTED_EXTENSIONS
+
+    target = args.target
+
+    if os.path.isdir(target):
+        result = ingest_directory(
+            db, target,
+            pattern=args.pattern or "*",
+            recursive=not args.no_recursive,
+            embed=not args.no_embed,
+            autocommit=not args.no_commit,
+        )
+        print(f"Ingested {result['total_files']} files, {result['total_rows']} total rows")
+        for fname, r in result["files"].items():
+            if "error" in r:
+                print(f"  ✗ {fname}: {r['error']}")
+            else:
+                count = r.get("rows", r.get("chunks", r.get("documents", 0)))
+                print(f"  ✓ {fname}: {count}")
+    else:
+        file_type = detect_type(target)
+        kwargs = {}
+        if args.text_column:
+            if file_type == "csv":
+                kwargs["text_column"] = args.text_column
+            elif file_type == "sqlite":
+                # For SQLite, text_columns is a dict {table: column}
+                # Simple case: use same column for all tables
+                kwargs["text_columns"] = {"*": args.text_column}
+        if args.chunk_size:
+            kwargs["chunk_size"] = args.chunk_size
+        if args.chunk_overlap:
+            kwargs["chunk_overlap"] = args.chunk_overlap
+
+        result = ingest_file(
+            db, target,
+            embed=not args.no_embed,
+            autocommit=not args.no_commit,
+            **kwargs,
+        )
+
+        # Print results based on type
+        if "tables" in result:
+            print(f"Ingested SQLite: {result['tables']} tables, {result['total_rows']} rows")
+        elif "chunks" in result:
+            print(f"Ingested: {result['chunks']} chunks ({result.get('total_chars', 0)} chars)")
+        elif "documents" in result:
+            print(f"Ingested MongoDB: {result['documents']} documents")
+        elif "rows" in result:
+            print(f"Ingested: {result['rows']} rows")
+        else:
+            print(f"Ingested: {json.dumps(result, indent=2)}")
+
+
 def cmd_schema(args):
     db = load_db(args)
     if args.action == "show":
@@ -1319,6 +1375,17 @@ def main():
     p.add_argument("action", choices=["show", "set", "clear", "validate"])
     p.add_argument("--file", help="Schema JSON file (for set)")
 
+    # ingest
+    p = sub.add_parser("ingest", help="Ingest files (SQLite, MongoDB, CSV, Parquet, PDF, text)")
+    p.add_argument("target", help="File or directory to ingest")
+    p.add_argument("--text-column", help="Column to embed (for CSV/SQLite)")
+    p.add_argument("--chunk-size", type=int, help="Chunk size for text/PDF (default 500)")
+    p.add_argument("--chunk-overlap", type=int, help="Chunk overlap (default 50)")
+    p.add_argument("--pattern", help="Glob pattern for directory ingest (default *)")
+    p.add_argument("--no-recursive", action="store_true", help="Don't recurse into subdirs")
+    p.add_argument("--no-embed", action="store_true", help="Skip embedding (store raw text)")
+    p.add_argument("--no-commit", action="store_true", help="Don't auto-commit after ingest")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -1378,6 +1445,7 @@ def main():
         "watch": cmd_watch,
         "index": cmd_index,
         "schema": cmd_schema,
+        "ingest": cmd_ingest,
     }
 
     fn = dispatch.get(args.command)

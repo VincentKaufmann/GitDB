@@ -1,8 +1,19 @@
 # GitDB
 
-GPU-accelerated version-controlled vector database with structured queries, semantic search, and spreading activation.
+GPU-accelerated version-controlled vector database. No server. No Docker. No config. `pip install gitdb` and go.
 
-Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. Emirati AC for ambient intelligence. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, and schema enforcement. CEPH CRUSH placement. P2P distributed. Native backup and restore.
+## Why GitDB
+
+1. **Version control is native** — `git log`, `git diff`, `git branch`, `git merge` for your vectors. Nobody else has this.
+2. **Time-travel queries** — `db.query_text("revenue", at="v1.0")` searches an old snapshot. Chroma can't do this.
+3. **CEPH CRUSH placement** — deterministic data routing without a coordinator. Scales horizontally by adding peers.
+4. **P2P distributed** — no central server. Peers sync over SSH like git remotes. Each node is a full replica.
+5. **FoundationDB features** — hooks, transactions, watches, secondary indexes, schema enforcement. Enterprise-grade.
+6. **Spreading activation** — background semantic priming makes frequent queries instant. Multi-hop association chains emerge naturally.
+7. **CLI-first** — `gitdb init && gitdb add --text "doc" && gitdb commit -m "init"`. Works from terminal like git.
+8. **Embedded** — no server, no Docker, no config. `pip install gitdb` and go.
+
+Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. CEPH CRUSH placement. P2P distributed. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, schema enforcement. Native backup/restore. Universal ingest (SQLite, MongoDB, CSV, Parquet, PDF, text).
 
 ## Install
 
@@ -515,6 +526,59 @@ Node A (laptop)          Node B (Spark)         Node C (cloud)
 - **Leave**: mark node down → replicas re-placed to surviving nodes
 - **Conflict**: git-style branch/merge semantics handle divergence
 
+## Universal Ingest
+
+One command to swallow entire databases. SQLite, MongoDB, CSV, Parquet, PDF, text — auto-detected, auto-chunked, auto-committed.
+
+```python
+from gitdb import GitDB
+
+db = GitDB("my_store", dim=1024, device="mps")
+
+# Swallow an entire SQLite database
+db.ingest("legacy.db")
+# → Reads all tables, auto-detects text columns, embeds them, preserves all columns as metadata
+
+# Import MongoDB dump (JSON, JSONL, or BSON)
+db.ingest("users.jsonl")
+# → Handles $oid, $date, $numberLong; flattens nested objects with dot notation
+
+# CSV / TSV
+db.ingest("data.csv")                          # Auto-detect delimiter and text column
+db.ingest("data.tsv", text_column="content")   # Or specify it
+
+# Parquet
+db.ingest("warehouse.parquet")
+
+# PDF — sentence-boundary-aware chunking
+db.ingest("report.pdf", chunk_size=500, chunk_overlap=50)
+
+# Plain text / Markdown
+db.ingest("notes.md")
+
+# Entire directory — batch ingest everything
+db.ingest("./documents/", pattern="*.pdf", recursive=True)
+```
+
+```bash
+# CLI
+gitdb ingest legacy.db                       # SQLite
+gitdb ingest dump.jsonl                      # MongoDB
+gitdb ingest data.csv --text-column content  # CSV with explicit text column
+gitdb ingest report.pdf --chunk-size 1000    # PDF with custom chunking
+gitdb ingest ./docs/ --pattern "*.md"        # Directory batch
+gitdb ingest data.tsv --no-commit            # Ingest without auto-commit
+```
+
+| Format | Extensions | Features |
+|--------|-----------|----------|
+| SQLite | `.db`, `.sqlite`, `.sqlite3` | All tables, auto-detect text columns, preserve all metadata |
+| MongoDB | `.json`, `.jsonl`, `.bson` | Extended JSON (`$oid`, `$date`), nested object flattening |
+| CSV/TSV | `.csv`, `.tsv`, `.tab` | Auto-detect delimiter + text column, type inference |
+| Parquet | `.parquet`, `.pq` | Via pyarrow, auto-detect text column |
+| PDF | `.pdf` | Via pymupdf/PyPDF2, sentence-boundary chunking with overlap |
+| Text | `.txt`, `.md`, `.rst`, `.log` | Chunk with configurable size and overlap |
+
 ## Semantic Git Operations
 
 Git operations that understand meaning, not just hashes.
@@ -587,15 +651,16 @@ gitdb hook [list|clear]                       Event hooks
 gitdb watch [list|clear]                      Change watches
 gitdb index [create|drop|list|lookup]         Secondary indexes
 gitdb schema [show|set|clear|validate]        Schema enforcement
+gitdb ingest <file|dir> [--text-column C]     Universal ingest
 ```
 
 ## Architecture
 
 ```
-12,550 lines of Python across 20 modules. 361 tests.
+13,150 lines of Python across 21 modules. 394 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
-│                    GitDB v0.5.0                               │
+│                    GitDB v0.6.0                               │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  P2P Layer ──→ Distributed Cluster   ← P2P Network          │
@@ -646,13 +711,17 @@ gitdb schema [show|set|clear|validate]        Schema enforcement
 │       │              │                  full + incremental   │
 │       │         backup.py               verify, restore     │
 │       ▼              │                                       │
+│  Ingest ───→ Universal Import         ← Auto-detect         │
+│       │              │                  SQLite, MongoDB      │
+│       │         ingest.py               CSV, Parquet, PDF   │
+│       ▼              │                                       │
 │  QUERY ──→ Boosted Results                                   │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 
 Modules:
   core.py          2,383 lines   Main interface (60+ methods)
-  cli.py           1,391 lines   CLI (65+ commands)
+  cli.py           1,440 lines   CLI (66+ commands)
   distributed.py     765 lines   P2P distributed layer
   crush.py           600 lines   CEPH CRUSH algorithm
   ambient.py         459 lines   Emirati AC engine
@@ -669,6 +738,7 @@ Modules:
   schema.py          125 lines   JSON Schema validation
   watches.py         123 lines   Change subscriptions
   snapshots.py       118 lines   Read-only frozen views
+  ingest.py          909 lines   Universal ingest (6 formats)
   hooks.py            78 lines   Event hook system
 ```
 
@@ -701,6 +771,7 @@ Modules:
 | P2P distributed (no coordinator) | Yes | Cloud | Cloud | Cloud | No | No |
 | Scatter/gather distributed query | Yes | Cloud | Cloud | Cloud | No | No |
 | Gossip topology discovery | Yes | No | No | No | No | No |
+| Universal ingest (6 formats) | Yes | No | No | No | No | No |
 
 ## LLM Integration
 
@@ -992,6 +1063,7 @@ python -m pytest tests/test_transactions.py # 12 tests — atomic transactions
 python -m pytest tests/test_backup.py      # 9 tests — backup & restore
 python -m pytest tests/test_crush.py       # 32 tests — CRUSH algorithm
 python -m pytest tests/test_distributed.py # 33 tests — P2P distributed
+python -m pytest tests/test_ingest.py      # 33 tests — universal ingest
 
 # Run integration tests (requires model download)
 python -m pytest tests/test_embed.py -m slow
@@ -1017,6 +1089,7 @@ python -m pytest tests/test_embed.py -m slow
 | `test_backup.py` | 9 | full backup, manifest sidecar, history, incremental, restore, restore+query, overwrite, verify valid/corrupt |
 | `test_crush.py` | 32 | CRUSH map CRUD, straw2 determinism/weight/uniformity, single/multi-replica placement, host separation, down devices, router place/batch/distribution/rebalance, 144-device cluster |
 | `test_distributed.py` | 33 | peer registry CRUD/persistence, CRUSH routing (single/multi/deterministic/batch/uniform), distributed add with outbox, local + distributed query with dedup, rebalance planning, gossip discovery, sync |
+| `test_ingest.py` | 33 | SQLite (single/multi-table, auto-detect text, all metadata), MongoDB (JSON/JSONL, extended JSON, nested flattening), CSV (auto-detect, explicit column, TSV), text chunking (overlap, sentence boundaries), universal auto-detect, directory batch, helpers |
 
 ## Requirements
 

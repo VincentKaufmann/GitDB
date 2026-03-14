@@ -2308,6 +2308,29 @@ class GitDB:
             if errors:
                 raise SchemaError(f"Row {i}: {'; '.join(errors)}")
 
+    # ─── Ingest ───────────────────────────────────────────────
+
+    def ingest(self, path: str, **kwargs) -> dict:
+        """Universal ingest — auto-detect file type and import.
+
+        Supports: SQLite (.db, .sqlite), MongoDB (.json, .jsonl, .bson),
+        CSV/TSV (.csv, .tsv), Parquet (.parquet), PDF (.pdf),
+        Text (.txt, .md, .rst, .log), and directories.
+
+        Args:
+            path: File or directory path to ingest.
+            **kwargs: Passed to the appropriate ingest function
+                      (text_column, chunk_size, chunk_overlap, etc.)
+
+        Returns:
+            Ingest result dict with counts.
+        """
+        from gitdb.ingest import ingest_file, ingest_directory
+        from pathlib import Path as P
+        if P(path).is_dir():
+            return ingest_directory(self, path, **kwargs)
+        return ingest_file(self, path, **kwargs)
+
     # ─── Transactions ──────────────────────────────────────────
 
     def transaction(self) -> "Transaction":
