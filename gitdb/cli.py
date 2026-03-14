@@ -1389,6 +1389,11 @@ def main():
     p.add_argument("action", choices=["show", "set", "clear", "validate"])
     p.add_argument("--file", help="Schema JSON file (for set)")
 
+    # serve
+    p = sub.add_parser("serve", help="Launch web dashboard")
+    p.add_argument("--port", type=int, default=7474, help="Port (default 7474)")
+    p.add_argument("--no-browser", action="store_true", help="Don't open browser")
+
     # ingest
     p = sub.add_parser("ingest", help="Ingest files (SQLite, MongoDB, CSV, Parquet, PDF, text)")
     p.add_argument("target", help="File or directory to ingest")
@@ -1460,6 +1465,7 @@ def main():
         "index": cmd_index,
         "schema": cmd_schema,
         "ingest": cmd_ingest,
+        "serve": lambda args: __import__('gitdb.server', fromlist=['cmd_serve']).cmd_serve(args),
     }
 
     fn = dispatch.get(args.command)

@@ -598,6 +598,23 @@ gitdb ingest sftp://user@host/path/          # SFTP
 | MinIO | `minio://` | S3-compatible with custom endpoint |
 | SFTP | `sftp://` | paramiko, recursive directory listing, key or password auth |
 
+## Web Dashboard
+
+```bash
+gitdb serve
+```
+
+Opens a browser at `http://localhost:7474`. Dark theme. No dependencies.
+
+Semantic search bar. Commit timeline with branch labels. Branch sidebar. AC heatmap with live auto-refresh. Structured query builder. Stats footer.
+
+Keyboard shortcut: `/` focuses the search bar.
+
+```bash
+gitdb serve --port 8080           # Custom port
+gitdb serve --no-browser          # Don't auto-open browser
+```
+
 ## Semantic Git Operations
 
 Git operations that understand meaning, not just hashes.
@@ -671,15 +688,16 @@ gitdb watch [list|clear]                      Change watches
 gitdb index [create|drop|list|lookup]         Secondary indexes
 gitdb schema [show|set|clear|validate]        Schema enforcement
 gitdb ingest <file|dir> [--text-column C]     Universal ingest
+gitdb serve [--port N] [--no-browser]        Web dashboard
 ```
 
 ## Architecture
 
 ```
-13,500 lines of Python across 22 modules. 437 tests.
+14,400 lines of Python across 23 modules. 459 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
-│                    GitDB v0.7.0                               │
+│                    GitDB v0.8.0                               │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  P2P Layer ──→ Distributed Cluster   ← P2P Network          │
@@ -738,6 +756,10 @@ gitdb ingest <file|dir> [--text-column C]     Universal ingest
 │       │              │                  stream + ingest      │
 │       │         cloud_ingest.py         temp + cleanup       │
 │       ▼              │                                       │
+│  Dashboard ──→ Web UI                 ← gitdb serve          │
+│       │              │                  commit graph, search │
+│       │         server.py               AC heatmap, queries  │
+│       ▼              │                                       │
 │  QUERY ──→ Boosted Results                                   │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
@@ -763,6 +785,7 @@ Modules:
   snapshots.py       118 lines   Read-only frozen views
   ingest.py          909 lines   Universal ingest (6 formats)
   cloud_ingest.py    349 lines   Cloud storage transport (S3/GCS/Azure/MinIO/SFTP)
+  server.py          673 lines   Web dashboard (gitdb serve)
   hooks.py            78 lines   Event hook system
 ```
 
@@ -797,6 +820,7 @@ Modules:
 | Gossip topology discovery | Yes | No | No | No | No | No |
 | Universal ingest (6 formats) | Yes | No | No | No | No | No |
 | Cloud ingest (S3/GCS/Azure/MinIO/SFTP) | Yes | No | No | No | No | No |
+| Built-in web dashboard | Yes | Cloud | Cloud | Yes | No | No |
 
 ## LLM Integration
 
@@ -1090,6 +1114,7 @@ python -m pytest tests/test_crush.py       # 32 tests — CRUSH algorithm
 python -m pytest tests/test_distributed.py # 33 tests — P2P distributed
 python -m pytest tests/test_ingest.py      # 33 tests — universal ingest
 python -m pytest tests/test_cloud_ingest.py # 43 tests — cloud storage ingest
+python -m pytest tests/test_server.py      # 22 tests — web dashboard
 
 # Run integration tests (requires model download)
 python -m pytest tests/test_embed.py -m slow
@@ -1117,6 +1142,7 @@ python -m pytest tests/test_embed.py -m slow
 | `test_distributed.py` | 33 | peer registry CRUD/persistence, CRUSH routing (single/multi/deterministic/batch/uniform), distributed add with outbox, local + distributed query with dedup, rebalance planning, gossip discovery, sync |
 | `test_ingest.py` | 33 | SQLite (single/multi-table, auto-detect text, all metadata), MongoDB (JSON/JSONL, extended JSON, nested flattening), CSV (auto-detect, explicit column, TSV), text chunking (overlap, sentence boundaries), universal auto-detect, directory batch, helpers |
 | `test_cloud_ingest.py` | 43 | URI parsing (all 5 schemes), is_cloud_uri detection, mocked S3/GCS/Azure/SFTP transports, error handling (missing deps, bad URIs), temp file cleanup, aggregate result counting |
+| `test_server.py` | 22 | API endpoints (status, log, branches, tags, query, select, diff, show, AC status/heatmap), HTML dashboard serve, JSON response validation, server lifecycle |
 
 ## Requirements
 
