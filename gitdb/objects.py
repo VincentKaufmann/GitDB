@@ -218,6 +218,13 @@ class RefStore:
             raise ValueError(f"Tag already exists: {name}")
         p.write_text(commit_hash + "\n")
 
+    def delete_tag(self, name: str):
+        """Delete a tag."""
+        p = self.tags_dir / name
+        if not p.exists():
+            raise ValueError(f"Tag not found: {name}")
+        p.unlink()
+
     def set_head(self, branch_name: str):
         """Point HEAD to a branch."""
         self.head_file.write_text(f"ref: refs/heads/{branch_name}\n")

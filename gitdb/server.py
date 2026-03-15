@@ -128,6 +128,56 @@ footer span{display:flex;align-items:center;gap:4px}
 .spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .empty{color:var(--dim);padding:40px;text-align:center}
+
+/* Modal overlay */
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:100;display:flex;align-items:center;justify-content:center;animation:fadeIn .2s ease}
+.modal{background:var(--bg2);border:1px solid var(--border);border-radius:8px;width:90%;max-width:800px;max-height:85vh;display:flex;flex-direction:column}
+.modal-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)}
+.modal-header h3{font-size:14px;font-weight:600}
+.modal-close{background:none;border:none;color:var(--dim);font-size:18px;cursor:pointer;padding:4px 8px}
+.modal-close:hover{color:var(--text)}
+.modal-body{overflow-y:auto;padding:16px;flex:1}
+
+/* Diff view */
+.diff-line{font-size:12px;line-height:1.6;white-space:pre;font-family:inherit}
+.diff-line .ln{display:inline-block;width:40px;text-align:right;color:var(--dim);padding-right:8px;user-select:none}
+.diff-add{background:rgba(74,222,128,.1);color:var(--green)}
+.diff-del{background:rgba(248,113,113,.1);color:var(--red)}
+.diff-hdr{color:var(--cyan);font-weight:600;margin-top:8px}
+.diff-stat{display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;margin-right:6px}
+.diff-enc{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:12px;margin-top:8px}
+.diff-enc .bar{height:8px;border-radius:4px;margin:4px 0}
+
+/* Git ops panel */
+.git-panel{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.git-panel .card{margin-bottom:0}
+.git-panel label{display:block;color:var(--dim);font-size:11px;margin-bottom:4px}
+.git-panel input,.git-panel select{width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px}
+.git-panel .btn{display:inline-block;padding:6px 16px;border:none;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600;transition:opacity .15s}
+.git-panel .btn:hover{opacity:.85}
+.btn-green{background:var(--green);color:#000}
+.btn-blue{background:var(--blue);color:#000}
+.btn-yellow{background:var(--yellow);color:#000}
+.btn-red{background:var(--red);color:#000}
+.git-result{margin-top:8px;font-size:12px;padding:6px 10px;border-radius:4px;background:var(--bg);display:none}
+
+/* Backup panel */
+.backup-panel{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.backup-panel .card{margin-bottom:0}
+.backup-list-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.backup-list-table th{text-align:left;color:var(--dim);padding:4px 8px;border-bottom:1px solid var(--border)}
+.backup-list-table td{padding:4px 8px;border-bottom:1px solid var(--bg3)}
+
+/* Ingest panel */
+.ingest-panel .card{max-width:600px}
+.ingest-type-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.ingest-type-btn{background:var(--bg3);border:1px solid var(--border);color:var(--dim);padding:10px 8px;border-radius:6px;cursor:pointer;text-align:center;font-family:inherit;font-size:12px;transition:all .15s}
+.ingest-type-btn:hover{border-color:var(--blue);color:var(--text)}
+.ingest-type-btn.selected{border-color:var(--blue);color:var(--blue);background:rgba(96,165,250,.1)}
+.ingest-type-btn .icon{font-size:20px;display:block;margin-bottom:4px}
+.ingest-progress{margin-top:12px;display:none}
+.ingest-progress .bar-bg{background:var(--bg3);border-radius:4px;height:6px;overflow:hidden}
+.ingest-progress .bar-fill{background:var(--blue);height:100%;border-radius:4px;transition:width .3s}
 </style>
 </head>
 <body>
@@ -172,11 +222,79 @@ footer span{display:flex;align-items:center;gap:4px}
 
       <div class="tabs">
         <button class="active" data-tab="commits">Commits</button>
+        <button data-tab="git">Git Ops</button>
         <button data-tab="query">Query Builder</button>
+        <button data-tab="backup">Backup</button>
+        <button data-tab="ingest">Ingest</button>
       </div>
 
       <div id="tab-commits" class="tab-panel active">
         <div class="timeline" id="commit-log"></div>
+      </div>
+
+      <div id="tab-git" class="tab-panel">
+        <div class="git-panel">
+          <div class="card">
+            <h3 style="margin-bottom:10px;color:var(--green)">Create Branch</h3>
+            <label>Branch name</label>
+            <input id="git-branch-name" placeholder="feature/my-branch">
+            <label>From ref (optional)</label>
+            <input id="git-branch-ref" placeholder="HEAD">
+            <button class="btn btn-green" onclick="gitCreateBranch()">Create</button>
+            <div class="git-result" id="git-branch-result"></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:10px;color:var(--blue)">Checkout / Switch</h3>
+            <label>Branch</label>
+            <select id="git-switch-branch" style="margin-bottom:8px"></select>
+            <button class="btn btn-blue" onclick="gitSwitch()">Switch</button>
+            <div class="git-result" id="git-switch-result"></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:10px;color:var(--yellow)">Merge</h3>
+            <label>Merge branch into current</label>
+            <select id="git-merge-branch" style="margin-bottom:8px"></select>
+            <label>Strategy</label>
+            <select id="git-merge-strategy">
+              <option value="union">union</option>
+              <option value="ours">ours</option>
+              <option value="theirs">theirs</option>
+            </select>
+            <button class="btn btn-yellow" onclick="gitMerge()">Merge</button>
+            <div class="git-result" id="git-merge-result"></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:10px;color:var(--cyan)">Commit</h3>
+            <label>Message</label>
+            <input id="git-commit-msg" placeholder="Commit message...">
+            <button class="btn btn-blue" onclick="gitCommit()">Commit</button>
+            <div class="git-result" id="git-commit-result"></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:10px;color:var(--yellow)">Tags</h3>
+            <label>Create tag</label>
+            <div style="display:flex;gap:6px;margin-bottom:8px">
+              <input id="git-tag-name" placeholder="v1.0.0" style="flex:1">
+              <input id="git-tag-ref" placeholder="HEAD" style="width:100px">
+              <button class="btn btn-yellow" onclick="gitCreateTag()">Tag</button>
+            </div>
+            <label>Delete tag</label>
+            <div style="display:flex;gap:6px">
+              <select id="git-tag-delete-sel" style="flex:1"></select>
+              <button class="btn btn-red" onclick="gitDeleteTag()">Delete</button>
+            </div>
+            <div class="git-result" id="git-tag-result"></div>
+          </div>
+          <div class="card" style="grid-column:span 2">
+            <h3 style="margin-bottom:10px;color:var(--cyan)">Data Integrity</h3>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+              <button class="btn btn-blue" onclick="checkIntegrity()">Check Integrity</button>
+              <button class="btn btn-yellow" onclick="repairData()">Auto-Repair</button>
+            </div>
+            <div class="git-result" id="integrity-result"></div>
+            <pre id="integrity-details" style="color:var(--dim);font-size:11px;max-height:200px;overflow:auto;white-space:pre-wrap;margin-top:8px;display:none"></pre>
+          </div>
+        </div>
       </div>
 
       <div id="tab-query" class="tab-panel">
@@ -189,6 +307,85 @@ footer span{display:flex;align-items:center;gap:4px}
             <button onclick="runSelect()" style="background:var(--blue);color:#000;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-weight:600">Run</button>
           </div>
           <pre id="q-results" style="color:var(--dim);font-size:12px;max-height:400px;overflow:auto;white-space:pre-wrap"></pre>
+        </div>
+      </div>
+
+      <div id="tab-backup" class="tab-panel">
+        <div class="backup-panel">
+          <div class="card">
+            <h3 style="margin-bottom:10px;color:var(--green)">Create Backup</h3>
+            <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Output path</label>
+            <input id="backup-path" placeholder="/tmp/gitdb-backup.tar.zst" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px">
+            <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Type</label>
+            <select id="backup-type" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px">
+              <option value="full">Full backup</option>
+              <option value="incremental">Incremental (since last)</option>
+            </select>
+            <button class="btn btn-green" onclick="createBackup()">Create Backup</button>
+            <div class="git-result" id="backup-create-result"></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:10px;color:var(--blue)">Restore</h3>
+            <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Backup archive path</label>
+            <input id="restore-path" placeholder="/tmp/gitdb-backup.tar.zst" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px">
+            <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px"><input type="checkbox" id="restore-overwrite"> Overwrite existing</label>
+            <button class="btn btn-yellow" onclick="restoreBackup()" style="margin-top:8px">Restore</button>
+            <div class="git-result" id="backup-restore-result"></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:10px;color:var(--cyan)">Upload to Cloud</h3>
+            <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Local backup path</label>
+            <input id="cloud-backup-path" placeholder="/tmp/gitdb-backup.tar.zst" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px">
+            <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Remote URI</label>
+            <input id="cloud-remote-uri" placeholder="s3://my-bucket/backups/gitdb.tar.zst" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px">
+            <div style="color:var(--dim);font-size:10px;margin-bottom:8px">Supports: s3://, gs://, az://, sftp://</div>
+            <button class="btn btn-blue" onclick="uploadToCloud()">Upload</button>
+            <div class="git-result" id="cloud-upload-result"></div>
+          </div>
+          <div class="card" style="grid-column:span 2">
+            <h3 style="margin-bottom:10px;color:var(--cyan)">Backup History</h3>
+            <button class="btn btn-blue" onclick="loadBackups()" style="margin-bottom:8px">Refresh</button>
+            <button class="btn btn-green" onclick="verifyBackup()" style="margin-bottom:8px;margin-left:8px">Verify Integrity</button>
+            <div id="backup-list-container"></div>
+            <div class="git-result" id="backup-verify-result"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-ingest" class="tab-panel">
+        <div class="ingest-panel">
+          <div class="card">
+            <h3 style="margin-bottom:12px;color:var(--green)">Ingest Data</h3>
+            <div class="ingest-type-grid">
+              <button class="ingest-type-btn selected" data-type="directory" onclick="selectIngestType(this)">
+                <span class="icon">📁</span>Directory
+              </button>
+              <button class="ingest-type-btn" data-type="file" onclick="selectIngestType(this)">
+                <span class="icon">📄</span>File
+              </button>
+              <button class="ingest-type-btn" data-type="database" onclick="selectIngestType(this)">
+                <span class="icon">🗄</span>Database
+              </button>
+              <button class="ingest-type-btn" data-type="bucket" onclick="selectIngestType(this)">
+                <span class="icon">☁</span>Cloud/Bucket
+              </button>
+            </div>
+            <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px" id="ingest-path-label">Directory path</label>
+            <input id="ingest-path" placeholder="/path/to/directory" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px">
+            <div id="ingest-opts" style="display:none;margin-bottom:8px">
+              <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Options (JSON)</label>
+              <input id="ingest-options" placeholder='{"chunk_size": 512}' style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px">
+            </div>
+            <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Commit message (optional)</label>
+            <input id="ingest-commit" placeholder="Ingest data from ..." style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:12px">
+            <button class="btn btn-green" onclick="runIngest()">Ingest</button>
+            <button class="btn btn-blue" onclick="document.getElementById('ingest-opts').style.display=document.getElementById('ingest-opts').style.display==='none'?'block':'none'" style="margin-left:8px">Options</button>
+            <div class="ingest-progress" id="ingest-progress">
+              <div style="color:var(--dim);font-size:12px;margin-bottom:4px" id="ingest-status">Ingesting...</div>
+              <div class="bar-bg"><div class="bar-fill" id="ingest-bar" style="width:0%"></div></div>
+            </div>
+            <div class="git-result" id="ingest-result"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -318,17 +515,107 @@ async function loadLog(branch) {
   }
 }
 
-// ── Show commit ──
+// ── Show commit (modal with diff) ──
 async function showCommit(ref) {
   const resp = await api('/api/show/' + ref);
   if (!resp || !resp.ok) return;
   const data = resp.data;
   const ts = new Date(data.timestamp * 1000).toISOString().replace('T',' ').slice(0,19);
-  alert('commit ' + data.hash + '\nParent: ' + (data.parent || 'none') +
-    '\nDate: ' + ts + '\n\n' + data.message +
-    '\n\n+' + data.stats.added + ' -' + data.stats.removed + ' ~' + data.stats.modified +
-    '\n' + data.tensor_rows + ' rows | delta ' + data.delta_size_bytes + ' bytes');
+
+  // Get diff if parent exists
+  let diffData = null;
+  if (data.parent) {
+    const diffResp = await api('/api/diff/' + data.parent + '/' + data.hash);
+    if (diffResp && diffResp.ok) diffData = diffResp.data;
+  }
+
+  // Get encrypted diff
+  let encDiff = null;
+  const encResp = await api('/api/diff/encrypted/' + ref);
+  if (encResp && encResp.ok) encDiff = encResp.data;
+
+  // Build modal
+  let html = '<div style="margin-bottom:12px">' +
+    '<div style="color:var(--dim);font-size:11px">commit ' + data.hash + '</div>' +
+    '<div style="color:var(--dim);font-size:11px">parent: ' + (data.parent || 'root') + '</div>' +
+    '<div style="color:var(--dim);font-size:11px">date: ' + ts + '</div>' +
+    '<div style="margin-top:6px;font-size:14px">' + esc(data.message) + '</div>' +
+    '<div style="margin-top:6px">' +
+      '<span class="diff-stat" style="background:rgba(74,222,128,.15);color:var(--green)">+' + data.stats.added + ' added</span>' +
+      '<span class="diff-stat" style="background:rgba(248,113,113,.15);color:var(--red)">-' + data.stats.removed + ' removed</span>' +
+      '<span class="diff-stat" style="background:rgba(251,191,36,.15);color:var(--yellow)">~' + data.stats.modified + ' modified</span>' +
+    '</div>' +
+    '<div style="color:var(--dim);font-size:11px;margin-top:4px">' + data.tensor_rows + ' rows | delta ' + data.delta_size_bytes + ' bytes</div>' +
+  '</div>';
+
+  // Plaintext diff (green/red lines)
+  if (diffData) {
+    html += '<h4 style="color:var(--cyan);margin:12px 0 8px">Vector Diff</h4>';
+    if (diffData.added_ids && diffData.added_ids.length) {
+      let ln = 1;
+      for (const id of diffData.added_ids) {
+        html += '<div class="diff-line diff-add"><span class="ln">' + ln + '</span>+ ' + esc(String(id)) + '</div>';
+        ln++;
+      }
+    }
+    if (diffData.removed_ids && diffData.removed_ids.length) {
+      let ln = 1;
+      for (const id of diffData.removed_ids) {
+        html += '<div class="diff-line diff-del"><span class="ln">' + ln + '</span>- ' + esc(String(id)) + '</div>';
+        ln++;
+      }
+    }
+    if (diffData.modified_ids && diffData.modified_ids.length) {
+      for (const id of diffData.modified_ids) {
+        html += '<div class="diff-line" style="color:var(--yellow)"><span class="ln">~</span>  ' + esc(String(id)) + ' (modified)</div>';
+      }
+    }
+    if (!diffData.added_ids.length && !diffData.removed_ids.length && !diffData.modified_ids.length) {
+      html += '<div style="color:var(--dim);font-size:12px">No vector changes</div>';
+    }
+  } else {
+    html += '<div style="color:var(--dim);font-size:12px;margin-top:8px">Root commit — no parent to diff against</div>';
+  }
+
+  // Encrypted diff
+  if (encDiff) {
+    html += '<h4 style="color:var(--cyan);margin:12px 0 8px">Encrypted Diff</h4>';
+    html += '<div class="diff-enc">';
+    html += '<div style="font-size:12px;color:var(--dim)">Ciphertext analysis (server sees no plaintext)</div>';
+    if (encDiff.has_changes) {
+      const pct = Math.min(100, Math.round((encDiff.changed_ratio || 0) * 100));
+      html += '<div style="margin-top:6px;font-size:12px"><span style="color:var(--yellow)">&#9679;</span> Encrypted objects changed: <strong>' + (encDiff.changed_count || '?') + '</strong> of ' + (encDiff.total_count || '?') + '</div>';
+      html += '<div class="bar" style="background:linear-gradient(90deg, var(--yellow) ' + pct + '%, var(--bg3) ' + pct + '%)"></div>';
+      html += '<div style="font-size:11px;color:var(--dim)">' + pct + '% of encrypted store changed</div>';
+    } else {
+      html += '<div style="margin-top:6px;font-size:12px"><span style="color:var(--green)">&#9679;</span> No encrypted changes detected</div>';
+    }
+    html += '</div>';
+  }
+
+  openModal('Commit ' + data.hash.slice(0,8), html);
 }
+
+// ── Modal system ──
+function openModal(title, bodyHtml) {
+  closeModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.onclick = e => { if (e.target === overlay) closeModal(); };
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><h3>' + esc(title) + '</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
+      '<div class="modal-body">' + bodyHtml + '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  document.addEventListener('keydown', modalEscHandler);
+}
+function closeModal() {
+  const el = document.querySelector('.modal-overlay');
+  if (el) el.remove();
+  document.removeEventListener('keydown', modalEscHandler);
+}
+function modalEscHandler(e) { if (e.key === 'Escape') closeModal(); }
 
 // ── Search ──
 $('#search-input').addEventListener('keydown', async e => {
@@ -433,6 +720,8 @@ for (const btn of $$('.tabs button')) {
     $$('.tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     $('#tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'git') { populateBranchSelects(); populateTagSelect(); }
+    if (btn.dataset.tab === 'backup') loadBackups();
   };
 }
 
@@ -502,6 +791,291 @@ async function switchDevice(device) {
   }
 }
 
+// ── Git operations ──
+async function populateBranchSelects() {
+  const resp = await api('/api/branches');
+  if (!resp || !resp.ok) return;
+  const branches = Object.keys(resp.data.branches || {});
+  const current = resp.data.current;
+  for (const selId of ['git-switch-branch', 'git-merge-branch']) {
+    const sel = document.getElementById(selId);
+    if (!sel) continue;
+    sel.innerHTML = '';
+    for (const b of branches) {
+      const opt = document.createElement('option');
+      opt.value = b;
+      opt.textContent = b + (b === current ? ' (current)' : '');
+      sel.appendChild(opt);
+    }
+  }
+}
+
+function showGitResult(elId, msg, ok) {
+  const el = document.getElementById(elId);
+  el.style.display = 'block';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+  el.textContent = msg;
+  setTimeout(() => el.style.display = 'none', 5000);
+}
+
+async function gitCreateBranch() {
+  const name = $('#git-branch-name').value.trim();
+  if (!name) return;
+  const ref = $('#git-branch-ref').value.trim() || 'HEAD';
+  const resp = await api('/api/branch', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,ref})});
+  if (resp && resp.ok) {
+    showGitResult('git-branch-result', 'Branch "' + name + '" created', true);
+    $('#git-branch-name').value = '';
+    loadLog(); renderSidebar(); populateBranchSelects();
+  } else {
+    showGitResult('git-branch-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+async function gitSwitch() {
+  const branch = $('#git-switch-branch').value;
+  if (!branch) return;
+  const resp = await api('/api/switch', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({branch})});
+  if (resp && resp.ok) {
+    showGitResult('git-switch-result', 'Switched to ' + branch, true);
+    init();
+  } else {
+    showGitResult('git-switch-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+async function gitMerge() {
+  const branch = $('#git-merge-branch').value;
+  const strategy = $('#git-merge-strategy').value;
+  if (!branch) return;
+  const resp = await api('/api/merge', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({branch,strategy})});
+  if (resp && resp.ok) {
+    const d = resp.data;
+    showGitResult('git-merge-result', 'Merged! ' + (d.commit_hash ? d.commit_hash.slice(0,8) : '') + (d.conflicts ? ' (conflicts: ' + d.conflicts + ')' : ''), true);
+    init();
+  } else {
+    showGitResult('git-merge-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+async function gitCommit() {
+  const message = $('#git-commit-msg').value.trim();
+  if (!message) return;
+  const resp = await api('/api/commit', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message})});
+  if (resp && resp.ok) {
+    showGitResult('git-commit-result', 'Committed: ' + (resp.data.hash || '').slice(0,8), true);
+    $('#git-commit-msg').value = '';
+    init();
+  } else {
+    showGitResult('git-commit-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+async function renderSidebar() {
+  const [branches, tags] = await Promise.all([api('/api/branches'), api('/api/tags')]);
+  if (branches && branches.ok) renderBranches(branches.data);
+  if (tags && tags.ok) renderTags(tags.data);
+}
+
+// ── Tag operations ──
+async function populateTagSelect() {
+  const resp = await api('/api/tags');
+  if (!resp || !resp.ok) return;
+  const sel = document.getElementById('git-tag-delete-sel');
+  if (!sel) return;
+  sel.innerHTML = '';
+  const tags = Object.keys(resp.data.tags || {});
+  if (!tags.length) {
+    const opt = document.createElement('option');
+    opt.textContent = '(no tags)';
+    opt.disabled = true;
+    sel.appendChild(opt);
+    return;
+  }
+  for (const t of tags) {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    sel.appendChild(opt);
+  }
+}
+
+async function gitCreateTag() {
+  const name = $('#git-tag-name').value.trim();
+  if (!name) return;
+  const ref = $('#git-tag-ref').value.trim() || 'HEAD';
+  const resp = await api('/api/tag', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,ref})});
+  if (resp && resp.ok) {
+    showGitResult('git-tag-result', 'Tag "' + name + '" created', true);
+    $('#git-tag-name').value = '';
+    renderSidebar(); populateTagSelect();
+  } else {
+    showGitResult('git-tag-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+async function gitDeleteTag() {
+  const sel = document.getElementById('git-tag-delete-sel');
+  const name = sel ? sel.value : '';
+  if (!name) return;
+  const resp = await api('/api/tag/delete', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  if (resp && resp.ok) {
+    showGitResult('git-tag-result', 'Tag "' + name + '" deleted', true);
+    renderSidebar(); populateTagSelect();
+  } else {
+    showGitResult('git-tag-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+// ── Data integrity ──
+async function checkIntegrity() {
+  const resp = await api('/api/integrity/check', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if (resp && resp.ok) {
+    const d = resp.data;
+    const el = document.getElementById('integrity-details');
+    if (d.valid) {
+      showGitResult('integrity-result', 'All good — ' + d.docs_checked + ' docs, ' + d.tables_checked + ' tables checked', true);
+      el.style.display = 'none';
+    } else {
+      showGitResult('integrity-result', d.issues.length + ' issues found', false);
+      el.style.display = 'block';
+      el.textContent = d.issues.join('\n');
+    }
+  } else {
+    showGitResult('integrity-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+async function repairData() {
+  if (!confirm('Auto-repair will fix corrupt docs, missing IDs, and extra columns. Continue?')) return;
+  const resp = await api('/api/integrity/repair', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if (resp && resp.ok) {
+    const d = resp.data;
+    const el = document.getElementById('integrity-details');
+    if (d.repaired) {
+      showGitResult('integrity-result', 'Repaired: ' + d.actions.length + ' actions', true);
+      el.style.display = 'block';
+      el.textContent = d.actions.join('\n');
+    } else {
+      showGitResult('integrity-result', 'Nothing to repair', true);
+      el.style.display = 'none';
+    }
+  } else {
+    showGitResult('integrity-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+// ── Cloud upload ──
+async function uploadToCloud() {
+  const backupPath = $('#cloud-backup-path').value.trim();
+  const remoteUri = $('#cloud-remote-uri').value.trim();
+  if (!backupPath || !remoteUri) { showGitResult('cloud-upload-result', 'Both paths required', false); return; }
+  const resp = await api('/api/backup/cloud', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backup_path: backupPath, remote_uri: remoteUri})});
+  if (resp && resp.ok) {
+    const d = resp.data;
+    showGitResult('cloud-upload-result', 'Uploaded ' + ((d.size_bytes || 0) / 1024).toFixed(1) + ' KB to ' + (d.remote_uri || ''), true);
+  } else {
+    showGitResult('cloud-upload-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+// ── Backup operations ──
+async function createBackup() {
+  const path = $('#backup-path').value.trim();
+  if (!path) { showGitResult('backup-create-result', 'Path required', false); return; }
+  const type = $('#backup-type').value;
+  const endpoint = type === 'incremental' ? '/api/backup/incremental' : '/api/backup';
+  const resp = await api(endpoint, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({output_path: path})});
+  if (resp && resp.ok) {
+    const d = resp.data;
+    showGitResult('backup-create-result', 'Backup created: ' + (d.objects_count || '?') + ' objects, ' + ((d.size_bytes || 0) / 1024).toFixed(1) + ' KB', true);
+    loadBackups();
+  } else {
+    showGitResult('backup-create-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+async function restoreBackup() {
+  const path = $('#restore-path').value.trim();
+  if (!path) { showGitResult('backup-restore-result', 'Path required', false); return; }
+  const overwrite = document.getElementById('restore-overwrite').checked;
+  if (!confirm('Restore from backup? This will ' + (overwrite ? 'OVERWRITE' : 'merge with') + ' existing data.')) return;
+  const resp = await api('/api/backup/restore', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backup_path: path, overwrite})});
+  if (resp && resp.ok) {
+    showGitResult('backup-restore-result', 'Restored successfully', true);
+    init();
+  } else {
+    showGitResult('backup-restore-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+async function loadBackups() {
+  const resp = await api('/api/backup/list');
+  const el = document.getElementById('backup-list-container');
+  if (!resp || !resp.ok || !resp.data.backups || !resp.data.backups.length) {
+    el.innerHTML = '<div style="color:var(--dim);font-size:12px">No backups recorded</div>';
+    return;
+  }
+  let html = '<table class="backup-list-table"><tr><th>Date</th><th>Type</th><th>Objects</th><th>Size</th></tr>';
+  for (const b of resp.data.backups) {
+    const d = b.timestamp ? new Date(b.timestamp * 1000).toISOString().slice(0,16).replace('T',' ') : '?';
+    html += '<tr><td>' + d + '</td><td>' + (b.type || 'full') + '</td><td>' + (b.objects_count || '?') + '</td><td>' + ((b.size_bytes || 0) / 1024).toFixed(1) + ' KB</td></tr>';
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+async function verifyBackup() {
+  const resp = await api('/api/backup/verify');
+  if (resp && resp.ok) {
+    const d = resp.data;
+    const ok = d.valid !== false;
+    showGitResult('backup-verify-result', ok ? 'Integrity OK — ' + (d.objects || '?') + ' objects verified' : 'Integrity FAILED: ' + (d.error || 'unknown'), ok);
+  } else {
+    showGitResult('backup-verify-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
+// ── Ingest operations ──
+let ingestType = 'directory';
+function selectIngestType(btn) {
+  $$('.ingest-type-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  ingestType = btn.dataset.type;
+  const label = document.getElementById('ingest-path-label');
+  const input = document.getElementById('ingest-path');
+  const placeholders = {directory:'/path/to/directory',file:'/path/to/file.csv',database:'/path/to/db.sqlite',bucket:'s3://bucket/prefix'};
+  const labels = {directory:'Directory path',file:'File path',database:'Database path (SQLite, MongoDB JSON)',bucket:'Cloud URI (s3://, gs://, az://)'};
+  label.textContent = labels[ingestType] || 'Path';
+  input.placeholder = placeholders[ingestType] || '/path/...';
+}
+
+async function runIngest() {
+  const path = $('#ingest-path').value.trim();
+  if (!path) { showGitResult('ingest-result', 'Path required', false); return; }
+  const optsStr = $('#ingest-options').value.trim();
+  let opts = {};
+  if (optsStr) { try { opts = JSON.parse(optsStr); } catch(e) { showGitResult('ingest-result', 'Invalid JSON options', false); return; } }
+  const commitMsg = $('#ingest-commit').value.trim();
+
+  const prog = document.getElementById('ingest-progress');
+  prog.style.display = 'block';
+  document.getElementById('ingest-status').textContent = 'Ingesting ' + path + '...';
+  document.getElementById('ingest-bar').style.width = '30%';
+
+  const resp = await api('/api/ingest', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path, commit_message: commitMsg, ...opts})});
+  document.getElementById('ingest-bar').style.width = '100%';
+  setTimeout(() => { prog.style.display = 'none'; document.getElementById('ingest-bar').style.width = '0%'; }, 2000);
+
+  if (resp && resp.ok) {
+    const d = resp.data;
+    showGitResult('ingest-result', 'Ingested: ' + (d.vectors_added || d.count || '?') + ' items' + (d.commit_hash ? ', committed ' + d.commit_hash.slice(0,8) : ''), true);
+    init();
+  } else {
+    showGitResult('ingest-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+  }
+}
+
 init();
 loadDevices();
 </script>
@@ -521,6 +1095,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 # Pre-compiled patterns for dynamic routes
 _RE_DIFF = re.compile(r"^/api/diff/([^/]+)/([^/]+)$")
 _RE_SHOW = re.compile(r"^/api/show/([^/]+)$")
+_RE_ENC_DIFF = re.compile(r"^/api/diff/encrypted/([^/]+)$")
 _RE_TABLE_ACTION = re.compile(r"^/api/tables/([^/]+)/(insert|select|update|delete)$")
 _RE_TABLE_DROP = re.compile(r"^/api/tables/([^/]+)$")
 
@@ -628,8 +1203,15 @@ class GitDBHandler(BaseHTTPRequestHandler):
             elif route == "/api/stash/list":
                 self._h_stash_list()
 
+            elif route == "/api/backup/list":
+                self._h_backup_list()
+
             else:
                 # Dynamic GET routes
+                m = _RE_ENC_DIFF.match(route)
+                if m:
+                    self._h_encrypted_diff(m.group(1))
+                    return
                 m = _RE_DIFF.match(route)
                 if m:
                     self._h_diff(m.group(1), m.group(2))
@@ -688,6 +1270,36 @@ class GitDBHandler(BaseHTTPRequestHandler):
             # --- Device Operations ---
             elif route == "/api/device/switch":
                 self._h_device_switch(body)
+
+            # --- Tag Operations ---
+            elif route == "/api/tag":
+                self._h_tag_create(body)
+            elif route == "/api/tag/delete":
+                self._h_tag_delete(body)
+
+            # --- Integrity ---
+            elif route == "/api/integrity/check":
+                self._h_integrity_check(body)
+            elif route == "/api/integrity/repair":
+                self._h_integrity_repair(body)
+
+            # --- Backup to Cloud ---
+            elif route == "/api/backup/cloud":
+                self._h_backup_cloud(body)
+
+            # --- Backup Operations ---
+            elif route == "/api/backup":
+                self._h_backup(body)
+            elif route == "/api/backup/incremental":
+                self._h_backup_incremental(body)
+            elif route == "/api/backup/restore":
+                self._h_backup_restore(body)
+            elif route == "/api/backup/verify":
+                self._h_backup_verify(body)
+
+            # --- Ingest ---
+            elif route == "/api/ingest":
+                self._h_ingest(body)
 
             # --- Vector Operations ---
             elif route == "/api/vectors/add":
@@ -1290,6 +1902,186 @@ class GitDBHandler(BaseHTTPRequestHandler):
             self._json_ok({"dropped": table_name})
         except (ValueError, KeyError) as e:
             self._json_err(str(e), 400)
+
+    # ── Tags ──
+
+    def _h_tag_create(self, body):
+        name = body.get("name")
+        if not name:
+            self._json_err("name is required", 400)
+            return
+        ref = body.get("ref", "HEAD")
+        try:
+            self.db.tag(name, ref=ref)
+            self._json_ok({"tag": name}, 201)
+        except ValueError as e:
+            self._json_err(str(e), 400)
+
+    def _h_tag_delete(self, body):
+        name = body.get("name")
+        if not name:
+            self._json_err("name is required", 400)
+            return
+        try:
+            self.db.delete_tag(name)
+            self._json_ok({"deleted": name})
+        except ValueError as e:
+            self._json_err(str(e), 400)
+
+    # ── Integrity ──
+
+    def _h_integrity_check(self, body):
+        try:
+            result = self.db.check_integrity()
+            self._json_ok(result)
+        except Exception as e:
+            self._json_err(str(e), 500)
+
+    def _h_integrity_repair(self, body):
+        try:
+            result = self.db.repair()
+            self._json_ok(result)
+        except Exception as e:
+            self._json_err(str(e), 500)
+
+    # ── Backup to Cloud ──
+
+    def _h_backup_cloud(self, body):
+        """Backup archive to S3/GCS/Azure/SFTP."""
+        backup_path = body.get("backup_path")
+        remote_uri = body.get("remote_uri")
+        if not backup_path:
+            self._json_err("backup_path is required", 400)
+            return
+        if not remote_uri:
+            self._json_err("remote_uri is required (s3://bucket/key, gs://..., az://...)", 400)
+            return
+        import os
+        if not os.path.exists(backup_path):
+            self._json_err(f"Backup file not found: {backup_path}", 400)
+            return
+        try:
+            from gitdb.storage import parse_storage_uri
+            backend = parse_storage_uri(remote_uri)
+            remote_key = os.path.basename(backup_path)
+            # If URI has a path after the bucket, use that as key
+            parts = remote_uri.split("://", 1)
+            if len(parts) == 2:
+                path_part = parts[1].split("/", 1)
+                if len(path_part) > 1 and path_part[1]:
+                    remote_key = path_part[1]
+
+            with open(backup_path, "rb") as f:
+                data = f.read()
+            backend.write(remote_key, data)
+            self._json_ok({
+                "uploaded": True,
+                "remote_uri": remote_uri,
+                "size_bytes": len(data),
+                "key": remote_key,
+            })
+        except ImportError as e:
+            self._json_err(f"Cloud dependency missing: {e}. Install with: pip install gitdb-vectors[cloud]", 400)
+        except Exception as e:
+            self._json_err(str(e), 500)
+
+    # ── Backup ──
+
+    def _h_backup(self, body):
+        output_path = body.get("output_path")
+        if not output_path:
+            self._json_err("output_path is required", 400)
+            return
+        compression = body.get("compression_level", 3)
+        try:
+            manifest = self.db.backup(output_path, compression_level=compression)
+            self._json_ok(manifest, 201)
+        except Exception as e:
+            self._json_err(str(e), 500)
+
+    def _h_backup_incremental(self, body):
+        output_path = body.get("output_path")
+        if not output_path:
+            self._json_err("output_path is required", 400)
+            return
+        compression = body.get("compression_level", 3)
+        try:
+            manifest = self.db.backup_incremental(output_path, compression_level=compression)
+            self._json_ok(manifest, 201)
+        except Exception as e:
+            self._json_err(str(e), 500)
+
+    def _h_backup_restore(self, body):
+        backup_path = body.get("backup_path")
+        if not backup_path:
+            self._json_err("backup_path is required", 400)
+            return
+        overwrite = body.get("overwrite", False)
+        try:
+            manifest = self.db.backup_restore(backup_path, overwrite=overwrite)
+            self._json_ok(manifest)
+        except Exception as e:
+            self._json_err(str(e), 500)
+
+    def _h_backup_verify(self, body):
+        try:
+            result = self.db.backup_verify()
+            self._json_ok(result)
+        except Exception as e:
+            self._json_err(str(e), 500)
+
+    def _h_backup_list(self):
+        try:
+            backups = self.db.backup_list()
+            self._json_ok({"backups": backups})
+        except Exception as e:
+            self._json_ok({"backups": []})
+
+    # ── Encrypted Diff ──
+
+    def _h_encrypted_diff(self, ref):
+        """Show whether encrypted objects changed between ref and its parent."""
+        try:
+            info = self.db.show(ref)
+            stats = info.get("stats", {}) if isinstance(info, dict) else {"added": info.stats.added, "removed": info.stats.removed, "modified": info.stats.modified}
+            total = self.db.tree.embeddings.shape[0] if self.db.tree.embeddings is not None else 0
+            added = stats.get("added", 0)
+            removed = stats.get("removed", 0)
+            modified = stats.get("modified", 0)
+            changed = added + removed + modified
+            self._json_ok({
+                "has_changes": changed > 0,
+                "changed_count": changed,
+                "total_count": total,
+                "changed_ratio": changed / max(total, 1),
+                "breakdown": {"added": added, "removed": removed, "modified": modified},
+            })
+        except Exception as e:
+            self._json_ok({"has_changes": False, "changed_count": 0, "total_count": 0, "changed_ratio": 0})
+
+    # ── Ingest ──
+
+    def _h_ingest(self, body):
+        path = body.get("path")
+        if not path:
+            self._json_err("path is required", 400)
+            return
+        commit_message = body.pop("commit_message", None)
+        body.pop("path", None)
+        try:
+            result = self.db.ingest(path, **body)
+            # Auto-commit if message provided
+            commit_hash = None
+            if commit_message:
+                try:
+                    commit_hash = self.db.commit(commit_message)
+                except ValueError:
+                    pass  # Nothing to commit
+            if commit_hash:
+                result["commit_hash"] = commit_hash
+            self._json_ok(result, 201)
+        except Exception as e:
+            self._json_err(str(e), 500)
 
     # ── AC (Ambient Cognition) ──
 

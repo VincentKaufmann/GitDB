@@ -1,5 +1,6 @@
 """GitDB — the main interface class."""
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -971,6 +972,147 @@ class GitDB:
         if commit_hash is None:
             raise ValueError(f"Cannot resolve ref: {ref}")
         self.refs.set_tag(name, commit_hash)
+
+    def delete_tag(self, name: str):
+        """Delete a tag."""
+        self.refs.delete_tag(name)
+
+    def check_integrity(self) -> dict:
+        """Validate document store and table integrity.
+
+        Checks:
+          - JSON docs parse correctly
+          - Table rows match column schema
+          - No orphaned tombstones
+          - Document _id uniqueness
+
+        Returns dict with {valid, issues, repaired}.
+        """
+        issues = []
+        repaired = 0
+
+        # Check document store
+        bad_doc_indices = []
+        seen_ids = {}
+        for i, doc in enumerate(self.docs._docs):
+            if i in self.docs._tombstones:
+                continue
+            # Check JSON serializable
+            try:
+                json.dumps(doc, default=str)
+            except (TypeError, ValueError) as e:
+                issues.append(f"Doc index {i}: invalid JSON — {e}")
+                bad_doc_indices.append(i)
+                continue
+            # Check _id
+            _id = doc.get("_id")
+            if _id is None:
+                issues.append(f"Doc index {i}: missing _id")
+            elif _id in seen_ids:
+                issues.append(f"Doc index {i}: duplicate _id '{_id}' (first at {seen_ids[_id]})")
+            else:
+                seen_ids[_id] = i
+
+        # Check orphaned tombstones
+        max_idx = len(self.docs._docs)
+        orphaned = [t for t in self.docs._tombstones if t >= max_idx]
+        if orphaned:
+            issues.append(f"Doc store: {len(orphaned)} orphaned tombstones (indices beyond doc list)")
+
+        # Check tables
+        for name in self.tables.list_tables():
+            table = self.tables._tables.get(name)
+            if table is None:
+                continue
+            cols = table.columns or {}
+            for row_i, row in enumerate(table._rows):
+                if row_i in getattr(table, '_tombstones', set()):
+                    continue
+                # Check row matches schema
+                for col_name, col_type in cols.items():
+                    val = row.get(col_name)
+                    if val is not None:
+                        try:
+                            json.dumps(val, default=str)
+                        except (TypeError, ValueError):
+                            issues.append(f"Table '{name}' row {row_i}, col '{col_name}': non-serializable value")
+                # Check for extra columns (exclude internal fields)
+                extra = set(row.keys()) - set(cols.keys()) - {'_id', '_rowid'}
+                if extra:
+                    issues.append(f"Table '{name}' row {row_i}: extra columns {extra}")
+
+        return {
+            "valid": len(issues) == 0,
+            "issues": issues,
+            "docs_checked": self.docs.size,
+            "tables_checked": len(self.tables.list_tables()),
+        }
+
+    def repair(self) -> dict:
+        """Auto-repair corrupt documents and table rows.
+
+        - Removes docs that can't serialize to JSON
+        - Fixes missing _id fields
+        - Removes orphaned tombstones
+        - Removes extra table columns
+
+        Returns dict with repair actions taken.
+        """
+        actions = []
+
+        # Fix docs that can't serialize
+        bad_indices = []
+        for i, doc in enumerate(self.docs._docs):
+            if i in self.docs._tombstones:
+                continue
+            try:
+                json.dumps(doc, default=str)
+            except (TypeError, ValueError):
+                bad_indices.append(i)
+        if bad_indices:
+            for i in bad_indices:
+                self.docs._tombstones.add(i)
+            actions.append(f"Tombstoned {len(bad_indices)} corrupt docs")
+
+        # Fix missing _ids
+        import uuid as _uuid
+        for i, doc in enumerate(self.docs._docs):
+            if i in self.docs._tombstones:
+                continue
+            if "_id" not in doc:
+                doc["_id"] = hashlib.sha256(
+                    json.dumps(doc, sort_keys=True, default=str).encode()
+                    + _uuid.uuid4().bytes
+                ).hexdigest()[:16]
+                actions.append(f"Generated _id for doc index {i}")
+
+        # Fix orphaned tombstones
+        max_idx = len(self.docs._docs)
+        orphaned = {t for t in self.docs._tombstones if t >= max_idx}
+        if orphaned:
+            self.docs._tombstones -= orphaned
+            actions.append(f"Removed {len(orphaned)} orphaned tombstones")
+
+        # Fix table rows with extra columns
+        for name in self.tables.list_tables():
+            table = self.tables._tables.get(name)
+            if table is None:
+                continue
+            cols = table.columns or {}
+            fixed = 0
+            for row in table._rows:
+                extra = set(row.keys()) - set(cols.keys()) - {'_id', '_rowid'}
+                if extra:
+                    for k in extra:
+                        del row[k]
+                    fixed += 1
+            if fixed:
+                actions.append(f"Table '{name}': removed extra columns from {fixed} rows")
+
+        return {
+            "repaired": len(actions) > 0,
+            "actions": actions,
+        }
 
     def status(self) -> Dict[str, Any]:
         """Show staged changes summary."""

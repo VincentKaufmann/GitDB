@@ -141,6 +141,18 @@ The server processed the entire repo without seeing a single byte of source code
 
 ## Changelog
 
+### v0.13.2 — Full Dashboard + Data Integrity + Cloud Backup
+- **Git operations GUI** — create branch, switch/checkout, merge (union/ours/theirs), commit — all from the dashboard, like GitHub's web interface
+- **Git tags GUI** — create and delete tags from the dashboard
+- **Commit diff modal** — click any commit hash for green/red diff view with line numbers (added/removed/modified vectors)
+- **Encrypted diff view** — ciphertext change detection per commit: shows % of encrypted store changed without revealing plaintext
+- **Backup GUI** — full/incremental backup to local path, restore with overwrite toggle, backup history table, integrity verification
+- **Cloud backup** — upload backup archives to S3, GCS, Azure Blob, SFTP directly from dashboard
+- **Ingest GUI** — type picker (Directory, File, Database, Cloud Bucket), path input, JSON options, auto-commit on ingest
+- **Data integrity check** — `db.check_integrity()` validates JSON docs, _id uniqueness, table schema conformance, orphaned tombstones
+- **Auto-repair** — `db.repair()` fixes corrupt JSON docs, missing _ids, orphaned tombstones, extra table columns
+- **Device picker** — detect CPU/MPS/CUDA, live switching from dashboard header, tensor migration on device change
+
 ### v0.13.0 — Real FHE + Encrypted Git + Encrypted SQL
 - **Homomorphic multiplication** — ciphertext × ciphertext with automatic relinearization. Real FHE.
 - **Formal security parameters** — 128/192/256-bit security levels (NIST/HE Standard)
@@ -353,6 +365,12 @@ db.backup("store.gitdb-backup")
 db.backup_incremental("store_incr.gitdb-incr")
 db.backup_verify()
 db.backup_list()
+
+# ── Data Integrity ─────────────────────────────────────
+result = db.check_integrity()   # validate docs + tables
+# → {"valid": True, "issues": [], "docs_checked": 42, "tables_checked": 3}
+result = db.repair()            # auto-fix corrupt data
+# → {"repaired": True, "actions": ["Tombstoned 2 corrupt docs"]}
 
 # ── P2P Distributed ────────────────────────────────────
 from gitdb.distributed import DistributedGitDB, Peer
@@ -864,9 +882,18 @@ gitdb ingest sftp://user@host/path/          # SFTP
 gitdb serve
 ```
 
-Opens a browser at `http://localhost:7474`. Dark theme. No dependencies.
+Opens a browser at `http://localhost:7474`. Dark theme. No dependencies. Zero frameworks — vanilla JS.
 
-Semantic search bar. Commit timeline with branch labels. Branch sidebar. AC heatmap with live auto-refresh. Structured query builder. Stats footer.
+**Tabs:**
+- **Commits** — timeline with branch labels, click any hash for green/red diff modal with encrypted change detection
+- **Git Ops** — create branch, switch, merge (union/ours/theirs), commit, create/delete tags, data integrity check + auto-repair
+- **Query Builder** — structured queries with WHERE/fields/limit on documents
+- **Backup** — full/incremental backup, restore, cloud upload (S3/GCS/Azure/SFTP), backup history, integrity verify
+- **Ingest** — directory, file, database, or cloud bucket import with auto-commit
+
+**Header:** branch indicator, HEAD hash, device picker (CPU/MPS/CUDA with live switching)
+**Sidebar:** branch list (click to filter commits), tag list, AC heatmap with live refresh
+**Footer:** vector count, commit count, dimensions, active device
 
 Keyboard shortcut: `/` focuses the search bar.
 
@@ -2294,10 +2321,10 @@ Nobody's done this. DVC versions files. MLflow tracks experiments. W&B tracks me
 ## Architecture
 
 ```
-24,000+ lines of Python across 31 modules. 708 tests.
+25,000+ lines of Python across 31 modules. 708 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
-│                    GitDB v0.13.1                              │
+│                    GitDB v0.13.2                              │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  P2P Layer ──→ Distributed Cluster   ← P2P Network          │
@@ -2385,9 +2412,9 @@ Nobody's done this. DVC versions files. MLflow tracks experiments. W&B tracks me
 └──────────────────────────────────────────────────────────────┘
 
 Modules (30):
-  core.py          2,600+ lines  Main interface (70+ methods)
+  core.py          2,900+ lines  Main interface (75+ methods)
   cli.py           1,900+ lines  CLI (75+ commands)
-  server.py        1,200+ lines  REST API + web dashboard
+  server.py        2,100+ lines  REST API + web dashboard (6 tabs)
   grpc_service.py    700+ lines  gRPC/Protobuf server + client
   ingest.py          909 lines   Universal ingest (6 formats)
   distributed.py     765 lines   P2P distributed layer
