@@ -2,7 +2,26 @@
 
 GPU-accelerated version-controlled database — vectors, documents, and tables. Three databases in one, all git-versioned. AES-256 encrypted at rest. GPU-accelerated FHE. REST API + gRPC server. `pip install gitdb-vectors` and go.
 
-## v0.13.0 Benchmark — Full Encrypted Stack
+## Zero-Knowledge Database
+
+Data enters GitDB encrypted. It is stored encrypted. Queries run on encrypted data. Results leave encrypted. **Plaintext never exists in GitDB's memory.**
+
+```
+┌──────────┐                    ┌──────────────────────────────┐                    ┌──────────┐
+│  CLIENT   │                    │         GitDB SERVER          │                    │  CLIENT   │
+│           │   enc(data) ──────▶│                               │                    │           │
+│  Has keys │                    │  Stores: ciphertext           │                    │  Has keys │
+│           │   enc(query) ─────▶│  Runs:   query on ciphertext  │                    │           │
+│           │                    │  Knows:  nothing               │                    │           │
+│           │◀────── enc(results)│  Sees:   random numbers       │   enc(results) ───▶│  Decrypts │
+└──────────┘                    └──────────────────────────────┘                    └──────────┘
+```
+
+The server does not know what it stores. It does not know what it queries. It does not know what it returns. It performs homomorphic math on ciphertext — addition, multiplication, diff, merge, JOIN, GROUP BY — and produces encrypted results that only the key holder can read. The entire database lifecycle happens on data that GitDB has never seen and cannot see.
+
+This is not encryption at rest. This is not encryption in transit. This is **encryption during computation**. The data is encrypted while the CPU is doing math on it.
+
+## v0.13.1 Benchmark — Full Encrypted Stack
 
 Every operation benchmarked. Query data, diff branches, merge commits — all encrypted, all GPU-accelerated.
 
