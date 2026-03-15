@@ -262,9 +262,31 @@ def cmd_merge(args):
     db = load_db(args)
     try:
         result = db.merge(args.branch, strategy=args.strategy)
-        print(f"Merge: {result}")
+        print(f"Merge commit {result.commit_hash[:12]} ({result.strategy})")
+        if result.added:
+            print(f"  \033[32m+{result.added} vectors added\033[0m")
+        if result.removed:
+            print(f"  \033[31m-{result.removed} vectors removed\033[0m")
         if result.has_conflicts:
-            print(f"\033[31mConflicts in {len(result.conflicts)} vectors\033[0m")
+            print(f"  \033[31m{len(result.conflicts)} conflicts: {', '.join(c[:8] for c in result.conflicts)}\033[0m")
+        if result.diff and result.diff.entries:
+            print()
+            unified = result.diff.unified("ours", args.branch)
+            for line in unified.splitlines():
+                if line.startswith("diff --gitdb"):
+                    print(f"\033[1m{line}\033[0m")
+                elif line.startswith("---"):
+                    print(f"\033[1;31m{line}\033[0m")
+                elif line.startswith("+++"):
+                    print(f"\033[1;32m{line}\033[0m")
+                elif line.startswith("@@"):
+                    print(f"\033[36m{line}\033[0m")
+                elif line.startswith("-"):
+                    print(f"\033[31m{line}\033[0m")
+                elif line.startswith("+"):
+                    print(f"\033[32m{line}\033[0m")
+                else:
+                    print(line)
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)

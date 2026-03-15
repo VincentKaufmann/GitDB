@@ -919,14 +919,45 @@ Reconstructs the working tree from the target branch's HEAD.
 
 ```python
 result = db.merge("experiment", strategy="union")
-# → MergeResult(commit_hash="...", added=2, conflicts=0)
+# → Merge(a3f1b2c4 | union +2 -0)
+
+# Full merge summary with diff
+print(result.show())
+# Merge commit a3f1b2c4... (union)
+#   +2 vectors added
+#
+# diff --gitdb ours/a3f1b2c4 experiment/a3f1b2c4
+# new vector a3f1b2c4...
+# --- /dev/null
+# +++ experiment/a3f1b2c4
+# @@ -0,0 +1 @@
+# +document: quarterly revenue report
+# +metadata: {"dept":"finance"}
+
+# Access the diff programmatically
+for entry in result.diff.entries:
+    print(entry.change, entry.document)
+
+# Check conflicts
+if result.has_conflicts:
+    print(f"Conflicts: {result.conflicts}")
 ```
 
 ```bash
 gitdb merge experiment --strategy union
+# Merge commit a3f1b2c4 (union)
+#   +2 vectors added
+#
+# diff --gitdb ours/a3f1b2c4 experiment/a3f1b2c4
+# new vector a3f1b2c4...
+# --- /dev/null
+# +++ experiment/a3f1b2c4
+# @@ -0,0 +1 @@
+# +document: quarterly revenue report
+# +metadata: {"dept":"finance"}
 ```
 
-Strategies: `union` (combine all), `ours` (keep our modifications), `theirs` (keep their modifications). Three-way merge finds common ancestor automatically.
+Strategies: `union` (combine all), `ours` (keep our modifications), `theirs` (keep their modifications). Three-way merge finds common ancestor automatically. Shows full git-style diff of what the merge brought in.
 
 ---
 

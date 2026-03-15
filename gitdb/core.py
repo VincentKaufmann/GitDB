@@ -1375,11 +1375,22 @@ class GitDB:
         new_hash = self.objects.write_commit(commit)
         self.refs.set_branch(current_branch, new_hash)
 
+        # Compute diff showing what the merge brought in
+        merge_diff = None
+        try:
+            merge_diff = self.diff(ours_hash, new_hash)
+        except Exception:
+            pass  # diff is best-effort
+
+        n_removed = max(0, len(ours_meta) - len(merged_meta)) if len(ours_meta) > len(merged_meta) else 0
+
         result = MergeResult(
             commit_hash=new_hash,
             conflicts=conflicts,
             strategy=strategy,
             added=max(0, n_added),
+            removed=n_removed,
+            diff=merge_diff,
         )
 
         # Fire post-merge hook

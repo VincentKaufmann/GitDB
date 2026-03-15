@@ -177,6 +177,7 @@ class MergeResult:
     strategy: str
     added: int = 0
     removed: int = 0
+    diff: Optional['DiffResult'] = None  # Full diff of what the merge changed
 
     @property
     def has_conflicts(self) -> bool:
@@ -184,7 +185,21 @@ class MergeResult:
 
     def __repr__(self):
         c = f", {len(self.conflicts)} conflicts" if self.conflicts else ""
-        return f"Merge({self.commit_hash[:8]} | {self.strategy}{c})"
+        return f"Merge({self.commit_hash[:8]} | {self.strategy} +{self.added} -{self.removed}{c})"
+
+    def show(self) -> str:
+        """Human-readable merge summary."""
+        lines = [f"Merge commit {self.commit_hash[:12]} ({self.strategy})"]
+        if self.added:
+            lines.append(f"  +{self.added} vectors added")
+        if self.removed:
+            lines.append(f"  -{self.removed} vectors removed")
+        if self.conflicts:
+            lines.append(f"  {len(self.conflicts)} conflicts: {', '.join(c[:8] for c in self.conflicts)}")
+        if self.diff and self.diff.entries:
+            lines.append("")
+            lines.append(self.diff.unified())
+        return "\n".join(lines)
 
 
 @dataclass
