@@ -81,11 +81,15 @@ class EncryptionManager:
             path = Path(key_file)
             if not path.exists():
                 raise EncryptionError(f"GITDB_KEY_FILE does not exist: {key_file}")
-            key = path.read_bytes().strip()
-            if len(key) == KEY_SIZE * 2:
-                # Looks hex-encoded
+            raw = path.read_bytes()
+            key = raw
+            if len(raw) == KEY_SIZE:
+                # Raw 32-byte key — use as-is
+                pass
+            elif len(raw.strip()) == KEY_SIZE * 2:
+                # Hex-encoded (possibly with trailing newline)
                 try:
-                    key = bytes.fromhex(key.decode("ascii"))
+                    key = bytes.fromhex(raw.strip().decode("ascii"))
                 except (ValueError, UnicodeDecodeError):
                     pass
             if len(key) != KEY_SIZE:

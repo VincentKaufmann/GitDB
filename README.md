@@ -1745,10 +1745,145 @@ Pluggable storage with `copy_between()` for zero-downtime migration.
 
 ---
 
+## Streaming Ingest
+
+NSA-grade versioned streaming pipeline. Every chunk content-addressed, hash-chained, Merkle-verified, encrypted at rest.
+
+```python
+from gitdb import StreamIngest
+
+with StreamIngest("my_store", dim=1024) as stream:
+    # Multiple concurrent feeds — each shard gets its own branch + WAL
+    sensor_a = stream.shard("sensor-a")
+    sensor_b = stream.shard("sensor-b")
+
+    # Ingest with full provenance
+    sensor_a.ingest(data, source="building-7")
+    sensor_b.ingest(data, source="building-12")
+
+    # Auto-commits every N chunks or T seconds
+    # Merkle root stored in every commit message
+
+    # Merge all shards into main
+    stream.merge_all()
+
+    # Verify nothing was tampered with
+    assert stream.verify()
+```
+
+**Components:**
+- **WAL** — append-only, fsync'd, encrypted write-ahead log per shard. Survives crashes
+- **Hash chain** — every chunk cryptographically links to its predecessor. Break the chain, we know
+- **Merkle tree** — tamper-proof integrity with inclusion proofs. One bit changes, the root changes
+- **Backpressure** — bounded buffers, slow consumers wait
+- **Dedup** — same content = same hash = stored once
+- **Crash recovery** — replay WAL from last committed sequence
+
+**Use cases:** IoT sensor networks, financial trading audit trails (SEC/FINRA), medical device data streams (FDA chain of custody), evidence management, intelligence collection pipelines, training data ingestion with poisoning detection.
+
+---
+
+## ML / AI Integration
+
+Training data management is the killer use case nobody's solved well.
+
+**The problem today:** Every ML team has a "data mess" — training data lives in S3 buckets, gets modified by 5 people, nobody knows which version of the dataset produced which model. When a model starts hallucinating, you can't trace it back to the training data that caused it.
+
+### 1. Training Data Versioning
+
+```python
+db = GitDB("training_data", dim=1024)
+db.ingest("datasets/v1/")
+db.commit("baseline training set")
+
+# Experiment with filtered data
+db.branch("no-toxic")
+db.purge(where={"toxicity": {"$gt": 0.8}})
+db.commit("removed toxic samples")
+
+# Which dataset produced the better model? Diff them.
+db.diff("main", "no-toxic")
+```
+
+Nobody else can do this. DVC comes close but it's file-level, not record-level. We diff individual training examples.
+
+### 2. RAG Infrastructure
+
+Every RAG system needs a vector DB. GitDB gives you:
+- **Branch per user/tenant** — multi-tenant RAG without separate databases
+- **Time-travel retrieval** — "answer this question using only knowledge from before March 2026"
+- **Audit trail** — which documents were retrieved for which answer (compliance, regulated industries)
+
+### 3. Embedding Management
+
+Models get re-embedded constantly — new embedding model drops, you re-embed everything. GitDB tracks this:
+
+```python
+db.commit("arctic-embed-l embeddings")
+# New model comes out
+db.branch("nv-embedqa")
+db.re_embed(model="nvidia/NV-EmbedQA")
+db.commit("re-embedded with NV-EmbedQA")
+# Compare retrieval quality between embedding versions
+```
+
+### 4. Dataset Curation / RLHF
+
+- Human annotators work on branches (each annotator = branch)
+- Merge reviewed annotations into main
+- Cherry-pick high-quality examples from one annotator's work
+- Full blame — who labeled what, when, and which labels got merged into the training set
+- This is exactly what Scale AI, Surge AI, and Labelbox charge millions for, minus the versioning
+
+### 5. Model Evaluation Store
+
+Store eval results as documents/tables with git versioning:
+
+```python
+db.create_table("evals", {"model": "text", "benchmark": "text", "score": "float"})
+db.insert_into("evals", {"model": "v3.5-mini", "benchmark": "MMLU", "score": 0.74})
+db.commit("v3.5-mini eval run")
+# Compare across model versions
+db.diff("v3.5-mini-evals", "v4.0-evals")
+```
+
+### 6. Streaming Training Data
+
+- Live data feeds (user interactions, feedback) streaming into shards
+- Auto-versioned, auto-committed
+- Merkle-verified — prove your training data wasn't poisoned
+- This is a real concern: training data poisoning attacks. Merkle trees catch them
+
+### 7. Feature Store
+
+Tables with git versioning = versioned feature store:
+- Branch for experimental features
+- Merge when validated
+- Time-travel to reproduce any historical model's exact feature set
+- Every ML platform (Tecton, Feast) charges for this
+
+### Where GitDB fits in the AI stack
+
+| Need | Current Solution | GitDB |
+|------|-----------------|-------|
+| Vector search | Pinecone/Weaviate/Chroma | Yes + version control |
+| Training data versioning | DVC (file-level only) | Record-level diffs |
+| Dataset curation | Labelbox/Scale ($$$) | Branch per annotator, merge |
+| Feature store | Tecton/Feast ($$$) | Tables + git versioning |
+| RAG | Any vector DB | + time-travel + audit trail |
+| Eval tracking | W&B/MLflow | Tables + branching |
+| Data provenance | Nothing good | Merkle trees + hash chains |
+
+**The pitch in one line:** GitDB is the version control layer that sits under your entire ML pipeline — training data, embeddings, features, evals, RAG — and gives you the same branch/merge/diff/blame workflow that git gave source code.
+
+Nobody's done this. DVC versions files. MLflow tracks experiments. W&B tracks metrics. None of them version the actual data at the record level with branch/merge semantics.
+
+---
+
 ## Architecture
 
 ```
-19,000+ lines of Python across 28 modules. 629 tests.
+20,000+ lines of Python across 29 modules. 657 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
 │                    GitDB v0.10.0                              │
@@ -1826,11 +1961,15 @@ Pluggable storage with `copy_between()` for zero-downtime migration.
 │       │              │                  streaming, high-perf  │
 │       │         grpc_service.py         client + server       │
 │       ▼              │                                       │
+│  StreamIngest ──→ Versioned Pipeline   ← NSA-grade            │
+│       │              │                  WAL, Merkle, hash     │
+│       │         streaming.py            chain, backpressure  │
+│       ▼              │                                       │
 │  QUERY ──→ Boosted Results                                   │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 
-Modules (28):
+Modules (29):
   core.py          2,600+ lines  Main interface (70+ methods)
   cli.py           1,900+ lines  CLI (75+ commands)
   server.py        1,200+ lines  REST API + web dashboard
@@ -1847,6 +1986,7 @@ Modules (28):
   structured.py      322 lines   Query operators, aggregation
   delta.py           288 lines   Sparse tensor deltas + zstd
   objects.py         270 lines   Content-addressed object store
+  streaming.py       400+ lines  StreamIngest pipeline (WAL, Merkle, shards)
   encryption.py      200+ lines  AES-256-GCM encryption
   working_tree.py    208 lines   GPU-resident tensor + search
   embed.py           200 lines   Arctic + NV-EmbedQA
@@ -1896,6 +2036,8 @@ Modules (28):
 | Encryption at rest | Yes | Cloud | Cloud | No | No | Extension |
 | REST API + gRPC | Both | REST | Both | REST | No | No |
 | Pluggable storage backends | Yes | Cloud | Cloud | Cloud | No | No |
+| Versioned streaming ingest | Yes | No | No | No | No | No |
+| Merkle integrity proofs | Yes | No | No | No | No | No |
 
 ## LLM Integration
 

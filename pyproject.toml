@@ -1,6 +1,6 @@
 [project]
 name = "gitdb-vectors"
-version = "0.10.0"
+version = "0.11.0"
 description = "GPU-accelerated version-controlled database — vectors, documents, tables, encrypted, with REST + gRPC"
 readme = "README.md"
 license = {text = "MIT"}
