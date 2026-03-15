@@ -2324,7 +2324,7 @@ Nobody's done this. DVC versions files. MLflow tracks experiments. W&B tracks me
 25,000+ lines of Python across 31 modules. 708 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
-│                    GitDB v0.13.2                              │
+│                    GitDB v0.13.3                              │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  P2P Layer ──→ Distributed Cluster   ← P2P Network          │
