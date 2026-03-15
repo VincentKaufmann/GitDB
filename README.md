@@ -691,6 +691,816 @@ gitdb ingest <file|dir> [--text-column C]     Universal ingest
 gitdb serve [--port N] [--no-browser]        Web dashboard
 ```
 
+## Command Reference
+
+Every command with examples. Python API and CLI side by side.
+
+---
+
+### init — Create a new store
+
+```python
+db = GitDB("my_store", dim=1024, device="mps")
+```
+
+```bash
+gitdb init my_store --dim 1024 --device mps
+```
+
+Creates a `.gitdb/` directory with config, HEAD, refs. Default dimension is 1024, default device is cpu.
+
+---
+
+### add — Add vectors
+
+```python
+# From text (auto-embeds with Arctic Embed)
+db.add(texts=["quarterly revenue report", "employee handbook"])
+
+# From embeddings directly
+db.add(embeddings=tensor, documents=["doc1", "doc2"], metadata=[{"dept": "finance"}])
+
+# From file
+db.add(embeddings=torch.load("vectors.pt"))
+```
+
+```bash
+gitdb add --text "quarterly revenue report" "employee handbook"
+gitdb add vectors.pt --documents docs.json
+gitdb add --text-file corpus.txt
+```
+
+Vectors are staged, not committed. Like `git add`.
+
+---
+
+### remove — Remove vectors
+
+```python
+db.remove(ids=["a3f1b2c4"])
+db.remove(where={"dept": "finance"})
+```
+
+Stages removals. Takes effect on commit.
+
+---
+
+### commit — Commit staged changes
+
+```python
+hash = db.commit("Add Q3 data")
+# → "a3f1b2c4d5e6..."
+```
+
+```bash
+gitdb commit -m "Add Q3 data"
+```
+
+Creates a delta (only what changed), hashes it, stores it as a content-addressed object. Returns the commit hash.
+
+---
+
+### log — Show commit history
+
+```python
+history = db.log(limit=10)
+for entry in history:
+    print(entry.hash[:8], entry.message, entry.stats)
+```
+
+```bash
+gitdb log -n 10
+# a3f1b2c4 Add Q3 data (+50 -0 ~3)
+# b7e2d3f5 Initial import (+500 -0 ~0)
+```
+
+---
+
+### status — Working tree status
+
+```python
+s = db.status()
+# → {"branch": "main", "staged_additions": 5, "staged_deletions": 0, "total_vectors": 500}
+```
+
+```bash
+gitdb status
+# On branch main
+# Staged: 5 additions, 0 deletions
+# Total vectors: 500
+```
+
+---
+
+### query — Vector similarity search
+
+```python
+results = db.query(vector, k=10)
+results = db.query_text("financial documents", k=5)
+results = db.query_text("revenue", k=10, where={"dept": "finance"})
+
+# Time-travel: search an old snapshot
+results = db.query_text("revenue", k=5, at="v1.0")
+```
+
+```bash
+gitdb query --text "financial documents" -k 5
+gitdb query --vector query.pt -k 10
+```
+
+Returns ids, scores, documents, metadata. Scores are cosine similarity (1.0 = identical).
+
+---
+
+### select — Structured query (like SQL)
+
+```python
+rows = db.select(where={"dept": "finance", "value": {"$gt": 100000}}, fields=["document", "value"])
+```
+
+```bash
+gitdb select --where '{"dept": "finance"}' --fields document,value --format table
+```
+
+No vectors involved. Pure metadata query with 13 operators.
+
+---
+
+### group-by — Aggregation
+
+```python
+groups = db.group_by("dept", agg_fn="count")
+# → {"finance": 50, "engineering": 120, "legal": 30}
+```
+
+```bash
+gitdb group-by dept --agg-fn count
+gitdb group-by category --agg-fn avg --agg-field score
+```
+
+Supports count, sum, avg, min, max.
+
+---
+
+### diff — Compare two refs
+
+```python
+diff = db.diff("main", "experiment")
+# → DiffResult(added=2, removed=0, modified=1, similarity=0.87)
+```
+
+```bash
+gitdb diff main experiment
+# Added:   2 vectors
+# Removed: 0 vectors
+# Modified: 1 vector (similarity: 0.87)
+```
+
+Semantic diff. Modified similarity tells you how much a vector actually changed in embedding space. 0.99 = barely touched. 0.5 = completely rewritten.
+
+---
+
+### branch — Create or list branches
+
+```python
+db.branch("experiment")
+branches = db.branches()
+# → {"main": "a3f1...", "experiment": "a3f1..."}
+```
+
+```bash
+gitdb branch experiment
+gitdb branch              # list all
+```
+
+---
+
+### switch — Switch branches
+
+```python
+db.switch("experiment")
+```
+
+```bash
+gitdb switch experiment
+```
+
+Reconstructs the working tree from the target branch's HEAD.
+
+---
+
+### merge — Merge branches
+
+```python
+result = db.merge("experiment", strategy="union")
+# → MergeResult(commit_hash="...", added=2, conflicts=0)
+```
+
+```bash
+gitdb merge experiment --strategy union
+```
+
+Strategies: `union` (combine all), `ours` (keep our modifications), `theirs` (keep their modifications). Three-way merge finds common ancestor automatically.
+
+---
+
+### cherry-pick — Apply a specific commit
+
+```python
+new_hash = db.cherry_pick("b7e2d3f5")
+```
+
+```bash
+gitdb cherry-pick b7e2d3f5
+```
+
+Applies just the delta from that commit onto your current branch.
+
+---
+
+### semantic-cherry-pick — Cherry-pick by meaning
+
+```python
+db.semantic_cherry_pick("feature", "authentication")
+# → Finds commits on "feature" whose vectors match "authentication" and picks them
+```
+
+```bash
+gitdb semantic-cherry-pick feature "authentication"
+```
+
+---
+
+### revert — Undo a commit
+
+```python
+new_hash = db.revert("b7e2d3f5")
+```
+
+```bash
+gitdb revert b7e2d3f5
+```
+
+Creates a new commit that reverses the delta of the target commit.
+
+---
+
+### stash — Stash uncommitted changes
+
+```python
+db.stash("work in progress")
+db.stash_pop()
+stashes = db.stash_list()
+```
+
+```bash
+gitdb stash save "work in progress"
+gitdb stash pop
+gitdb stash list
+```
+
+---
+
+### tag — Tag a commit
+
+```python
+db.tag("v1.0")
+db.tag("release-candidate", ref="abc123")
+```
+
+```bash
+gitdb tag v1.0
+```
+
+---
+
+### reset — Reset to a ref
+
+```python
+db.reset("v1.0")
+db.reset("HEAD~3")
+```
+
+```bash
+gitdb reset v1.0
+```
+
+Reconstructs working tree from the target ref. Discards staged changes.
+
+---
+
+### blame — Vector provenance
+
+```python
+entries = db.blame()
+for e in entries:
+    print(e.id, e.commit_hash[:8], e.message)
+# → "vec_001 a3f1b2c4 Add Q3 data"
+```
+
+```bash
+gitdb blame
+# vec_001  a3f1b2c4  Add Q3 data        2026-03-15
+# vec_002  b7e2d3f5  Initial import     2026-03-14
+```
+
+Shows which commit introduced each vector. Like `git blame` for embeddings.
+
+---
+
+### semantic-blame — Blame by concept
+
+```python
+entries = db.semantic_blame("toxic content", threshold=0.5)
+```
+
+```bash
+gitdb semantic-blame "toxic content" --threshold 0.5
+```
+
+Finds which commits introduced vectors semantically similar to your query.
+
+---
+
+### reflog — HEAD movement log
+
+```python
+entries = db.reflog(limit=20)
+```
+
+```bash
+gitdb reflog
+# a3f1b2c4 → b7e2d3f5  switch: main → experiment
+# b7e2d3f5 → c8d3e4f6  commit: Add Q3 data
+```
+
+Every HEAD movement, including switches, resets, merges.
+
+---
+
+### rebase — Rebase branch
+
+```python
+new_hashes = db.rebase("main")
+```
+
+```bash
+gitdb rebase main
+```
+
+Replays your branch's commits on top of the target.
+
+---
+
+### gc — Garbage collect
+
+```python
+db.gc(keep_last=10)
+```
+
+```bash
+gitdb gc --keep 10
+```
+
+Creates cached snapshots for faster reconstruction. Removes old cache entries.
+
+---
+
+### purge — Remove from all history
+
+```python
+db.purge(where={"author": "claude"}, reason="cleanup")
+```
+
+```bash
+gitdb purge --where '{"author": "claude"}' --reason "cleanup"
+```
+
+Rewrites every commit in history. After purge, the target vectors never existed in any historical state. Irreversible.
+
+---
+
+### filter-branch — Transform all vectors
+
+```python
+db.filter_branch(lambda embeddings, metadata: (embeddings * 0.5, metadata))
+```
+
+```bash
+gitdb filter-branch normalize
+```
+
+Applies a transformation function to every commit's vectors. Rewrites history.
+
+---
+
+### show — Show commit details
+
+```python
+info = db.show("abc123")
+# → {"hash": "abc123...", "message": "...", "parent": "...", "stats": {...}}
+```
+
+```bash
+gitdb show abc123
+gitdb show HEAD
+```
+
+---
+
+### amend — Amend last commit
+
+```python
+new_hash = db.amend(message="Better message")
+```
+
+```bash
+gitdb amend -m "Better message"
+```
+
+---
+
+### squash — Squash N commits
+
+```python
+new_hash = db.squash(3, message="Combined work")
+```
+
+```bash
+gitdb squash 3 -m "Combined work"
+```
+
+---
+
+### fork / clone — Copy a store
+
+```python
+new_db = db.fork("/path/to/copy")
+new_db = db.fork("/path/to/copy", branch="experiment")
+```
+
+```bash
+gitdb fork /path/to/copy
+gitdb clone /path/to/copy
+```
+
+---
+
+### note — Add notes to commits
+
+```python
+db.note("abc123", "This commit has a known issue")
+notes = db.notes("abc123")
+```
+
+```bash
+gitdb note -m "This commit has a known issue"
+```
+
+---
+
+### remote — Manage remotes
+
+```python
+db.remote_add("origin", "/path/to/remote")
+db.remote_add("spark", "ssh://xentureon@100.89.91.91/~/stores/vectors")
+db.remote_remove("origin")
+remotes = db.remotes()
+```
+
+```bash
+gitdb remote add origin /path/to/remote
+gitdb remote add spark ssh://xentureon@100.89.91.91/~/stores/vectors
+gitdb remote list
+gitdb remote remove origin
+```
+
+Supports local paths and SSH remotes.
+
+---
+
+### push — Push to remote
+
+```python
+result = db.push("origin")
+result = db.push("spark", branch="experiment")
+```
+
+```bash
+gitdb push origin
+gitdb push spark experiment
+```
+
+Transfers objects + refs over SSH or local copy.
+
+---
+
+### pull — Pull from remote
+
+```python
+result = db.pull("origin")
+result = db.pull("spark", branch="main")
+```
+
+```bash
+gitdb pull origin
+gitdb pull spark main
+```
+
+Fetches + merges in one step.
+
+---
+
+### fetch — Fetch without merging
+
+```python
+result = db.fetch("origin")
+```
+
+```bash
+gitdb fetch origin
+gitdb fetch spark experiment
+```
+
+---
+
+### pr — Pull requests on vectors
+
+```python
+# Create
+db.pr_create(title="Q3 forecast", source="experiment", target="main",
+             description="New revenue model vectors")
+
+# Review
+prs = db.pr_list()
+pr = db.pr_show(1)
+
+# Comment
+db.pr_comment(1, "reviewer", "Looks good, projections vectors improved")
+
+# Merge or close
+result = db.pr_merge(1)
+db.pr_close(2)
+```
+
+```bash
+gitdb pr create --title "Q3 forecast" --source experiment --target main
+gitdb pr list
+gitdb pr show 1
+gitdb comment -m "LGTM"
+gitdb pr merge 1
+gitdb pr close 2
+```
+
+Full PR workflow for vectors. Create, review diffs, comment, merge or close. Same flow as GitHub PRs but for tensors.
+
+---
+
+### export / import — JSONL
+
+```python
+db.export_jsonl("data.jsonl", include_embeddings=True)
+db.import_jsonl("data.jsonl", embed_texts=True)
+```
+
+```bash
+gitdb export data.jsonl --embeddings
+gitdb import data.jsonl --embed
+```
+
+---
+
+### embed — Embedding tools
+
+```bash
+gitdb embed list                          # List available models
+gitdb embed text "hello world"            # Embed text, print vector
+gitdb embed info                          # Current model info
+```
+
+---
+
+### re-embed — Re-embed all vectors
+
+```python
+db.re_embed(embed_model="nv-embed-qa")
+```
+
+```bash
+gitdb re-embed --model nv-embed-qa
+```
+
+Re-embeds every vector with a different model. Useful after model upgrades.
+
+---
+
+### ac — Spreading activation engine
+
+```python
+db.ac.start()
+db.ac.feed_vectors(query_vector)
+primed = db.ac.primed(k=10)       # Hot vectors ready for instant recall
+drift = db.ac.drift()             # Detect embedding drift
+stats = db.ac.stats()
+db.ac.stop()
+```
+
+```bash
+gitdb ac start
+gitdb ac status
+gitdb ac primed -k 10
+gitdb ac drift
+gitdb ac stop
+```
+
+Background thread that spreads activation through your vectors. Feed it a query, it pre-activates related vectors across multi-hop chains. Makes frequent queries instant.
+
+---
+
+### backup — Backup operations
+
+```python
+manifest = db.backup("backup.gitdb-backup")
+manifest = db.backup_incremental("backup.gitdb-incr")
+backups = db.backup_list()
+result = db.backup_verify()
+```
+
+```bash
+gitdb backup full backup.gitdb-backup
+gitdb backup incremental backup.gitdb-incr
+gitdb backup list
+gitdb backup verify
+```
+
+Full or incremental. tar.zst compressed. Includes manifest with checksums.
+
+---
+
+### restore — Restore from backup
+
+```python
+manifest = db.backup_restore("backup.gitdb-backup", overwrite=True)
+```
+
+```bash
+gitdb restore backup.gitdb-backup /path/to/dest --force
+```
+
+---
+
+### snapshot — Read-only frozen views
+
+```python
+snap = db.snapshot("before_experiment")
+results = snap.query(vector, k=5)
+rows = snap.select(where={"dept": "finance"})
+```
+
+```bash
+gitdb snapshot create before_experiment
+gitdb snapshot list
+gitdb snapshot query before_experiment --text "revenue" -k 5
+```
+
+Zero-copy frozen view of the current state. Query it while the main store keeps changing.
+
+---
+
+### hook — Event hooks
+
+```python
+db.hook("pre-commit", lambda **ctx: validate(ctx))
+db.hook("post-commit", lambda **ctx: notify(ctx["commit_hash"]))
+db.hook("pre-merge", lambda **ctx: check_approval(ctx))
+db.unhook("pre-commit", my_hook)
+```
+
+```bash
+gitdb hook list
+gitdb hook clear pre-commit
+```
+
+Events: pre-commit, post-commit, pre-merge, post-merge, on-drift. Pre-hooks return False to reject the operation.
+
+---
+
+### watch — Change subscriptions
+
+```python
+watch_id = db.watch(where={"dept": "finance"}, on_change=lambda delta: alert(delta))
+watch_id = db.watch(branch="experiment", on_change=callback)
+db.watches_list()
+```
+
+```bash
+gitdb watch list
+gitdb watch clear
+```
+
+Fires callback when matching vectors change.
+
+---
+
+### index — Secondary indexes
+
+```python
+db.create_index("dept", index_type="hash")
+db.create_index("score", index_type="range")
+results = db.index_lookup("dept", "finance")
+```
+
+```bash
+gitdb index create dept --type hash
+gitdb index create score --type range
+gitdb index lookup dept finance
+gitdb index list
+gitdb index drop dept
+```
+
+Hash indexes for O(1) exact lookup. Range indexes for O(log n) range queries.
+
+---
+
+### schema — Schema enforcement
+
+```python
+db.set_schema({
+    "required": ["dept", "author"],
+    "properties": {
+        "dept": {"type": "string", "enum": ["finance", "legal", "eng"]},
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+    }
+})
+# Now db.add() rejects metadata that doesn't match
+```
+
+```bash
+gitdb schema set schema.json
+gitdb schema show
+gitdb schema validate           # Check all existing rows
+gitdb schema clear
+```
+
+JSON Schema subset. Validates on every add().
+
+---
+
+### ingest — Universal ingest
+
+```python
+db.ingest("legacy.db")                    # SQLite
+db.ingest("dump.jsonl")                   # MongoDB
+db.ingest("data.csv")                     # CSV
+db.ingest("report.pdf")                   # PDF
+db.ingest("./documents/")                 # Directory
+db.ingest("s3://my-bucket/data/")         # S3
+db.ingest("gs://my-bucket/prefix/")       # GCS
+db.ingest("sftp://user@host/path/")       # SFTP
+```
+
+```bash
+gitdb ingest legacy.db
+gitdb ingest data.csv --text-column content
+gitdb ingest report.pdf --chunk-size 1000
+gitdb ingest ./docs/ --pattern "*.md"
+gitdb ingest s3://my-bucket/data/
+```
+
+Auto-detect file type, auto-chunk text, auto-embed, auto-commit.
+
+---
+
+### serve — Web dashboard
+
+```python
+# From Python
+from gitdb.server import start_server
+start_server(db, port=7474)
+```
+
+```bash
+gitdb serve
+gitdb serve --port 8080 --no-browser
+```
+
+Dark theme browser UI at localhost:7474. Semantic search, commit graph, branch sidebar, AC heatmap, structured queries. No dependencies.
+
+---
+
+### transaction — Atomic operations
+
+```python
+with db.transaction() as tx:
+    tx.add(texts=["new doc"])
+    tx.remove(where={"old": True})
+    # Either both happen or neither — rolls back on exception
+```
+
+All-or-nothing. Snapshots state on enter, restores on exception.
+
+---
+
 ## Architecture
 
 ```
