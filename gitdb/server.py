@@ -326,8 +326,19 @@ footer span{display:flex;align-items:center;gap:4px}
           </div>
           <div class="card">
             <h3 style="margin-bottom:10px;color:var(--blue)">Restore</h3>
-            <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Backup archive path</label>
-            <input id="restore-path" placeholder="/tmp/gitdb-backup.tar.zst" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px">
+            <div style="display:flex;gap:4px;margin-bottom:8px">
+              <button class="btn btn-blue" onclick="setRestoreMode('local')" id="restore-local-btn" style="font-size:11px;padding:4px 10px;opacity:1">Local</button>
+              <button class="btn btn-blue" onclick="setRestoreMode('cloud')" id="restore-cloud-btn" style="font-size:11px;padding:4px 10px;opacity:.5">Cloud</button>
+            </div>
+            <div id="restore-local-panel">
+              <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Backup archive path</label>
+              <input id="restore-path" placeholder="/tmp/gitdb-backup.tar.zst" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px">
+            </div>
+            <div id="restore-cloud-panel" style="display:none">
+              <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px">Remote URI</label>
+              <input id="restore-cloud-uri" placeholder="s3://my-bucket/backups/gitdb.tar.zst" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-family:inherit;font-size:12px;margin-bottom:8px">
+              <div style="color:var(--dim);font-size:10px;margin-bottom:4px">Downloads from S3/GCS/Azure/SFTP, then restores</div>
+            </div>
             <label style="display:block;color:var(--dim);font-size:11px;margin-bottom:4px"><input type="checkbox" id="restore-overwrite"> Overwrite existing</label>
             <button class="btn btn-yellow" onclick="restoreBackup()" style="margin-top:8px">Restore</button>
             <div class="git-result" id="backup-restore-result"></div>
@@ -995,17 +1006,41 @@ async function createBackup() {
   }
 }
 
+let restoreMode = 'local';
+function setRestoreMode(mode) {
+  restoreMode = mode;
+  document.getElementById('restore-local-panel').style.display = mode === 'local' ? '' : 'none';
+  document.getElementById('restore-cloud-panel').style.display = mode === 'cloud' ? '' : 'none';
+  document.getElementById('restore-local-btn').style.opacity = mode === 'local' ? '1' : '.5';
+  document.getElementById('restore-cloud-btn').style.opacity = mode === 'cloud' ? '1' : '.5';
+}
+
 async function restoreBackup() {
-  const path = $('#restore-path').value.trim();
-  if (!path) { showGitResult('backup-restore-result', 'Path required', false); return; }
   const overwrite = document.getElementById('restore-overwrite').checked;
   if (!confirm('Restore from backup? This will ' + (overwrite ? 'OVERWRITE' : 'merge with') + ' existing data.')) return;
-  const resp = await api('/api/backup/restore', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backup_path: path, overwrite})});
-  if (resp && resp.ok) {
-    showGitResult('backup-restore-result', 'Restored successfully', true);
-    init();
+
+  if (restoreMode === 'cloud') {
+    const uri = $('#restore-cloud-uri').value.trim();
+    if (!uri) { showGitResult('backup-restore-result', 'Remote URI required', false); return; }
+    showGitResult('backup-restore-result', 'Downloading from cloud...', true);
+    const resp = await api('/api/backup/cloud/restore', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({remote_uri: uri, overwrite})});
+    if (resp && resp.ok) {
+      const d = resp.data;
+      showGitResult('backup-restore-result', 'Restored from cloud — ' + ((d.download_size_bytes || 0) / 1024).toFixed(1) + ' KB downloaded', true);
+      init();
+    } else {
+      showGitResult('backup-restore-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+    }
   } else {
-    showGitResult('backup-restore-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+    const path = $('#restore-path').value.trim();
+    if (!path) { showGitResult('backup-restore-result', 'Path required', false); return; }
+    const resp = await api('/api/backup/restore', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backup_path: path, overwrite})});
+    if (resp && resp.ok) {
+      showGitResult('backup-restore-result', 'Restored successfully', true);
+      init();
+    } else {
+      showGitResult('backup-restore-result', 'Error: ' + (resp ? resp.error : 'failed'), false);
+    }
   }
 }
 
@@ -1286,6 +1321,8 @@ class GitDBHandler(BaseHTTPRequestHandler):
             # --- Backup to Cloud ---
             elif route == "/api/backup/cloud":
                 self._h_backup_cloud(body)
+            elif route == "/api/backup/cloud/restore":
+                self._h_backup_cloud_restore(body)
 
             # --- Backup Operations ---
             elif route == "/api/backup":
@@ -1982,6 +2019,41 @@ class GitDBHandler(BaseHTTPRequestHandler):
             })
         except ImportError as e:
             self._json_err(f"Cloud dependency missing: {e}. Install with: pip install gitdb-vectors[cloud]", 400)
+        except Exception as e:
+            self._json_err(str(e), 500)
+
+    def _h_backup_cloud_restore(self, body):
+        """Download backup from S3/GCS/Azure/SFTP and restore."""
+        remote_uri = body.get("remote_uri")
+        if not remote_uri:
+            self._json_err("remote_uri is required (s3://bucket/key, gs://..., az://...)", 400)
+            return
+        overwrite = body.get("overwrite", False)
+        import os, tempfile
+        try:
+            from gitdb.storage import parse_storage_uri
+            backend = parse_storage_uri(remote_uri)
+            # Extract key from URI
+            parts = remote_uri.split("://", 1)
+            remote_key = parts[1].split("/", 1)[1] if len(parts) == 2 and "/" in parts[1] else os.path.basename(remote_uri)
+
+            # Download to temp file
+            data = backend.read(remote_key)
+            tmp = tempfile.NamedTemporaryFile(suffix=".tar.zst", delete=False)
+            tmp.write(data)
+            tmp.close()
+
+            # Restore
+            manifest = self.db.backup_restore(tmp.name, overwrite=overwrite)
+            os.unlink(tmp.name)
+
+            manifest["downloaded_from"] = remote_uri
+            manifest["download_size_bytes"] = len(data)
+            self._json_ok(manifest)
+        except ImportError as e:
+            self._json_err(f"Cloud dependency missing: {e}. Install with: pip install gitdb-vectors[cloud]", 400)
+        except KeyError:
+            self._json_err(f"Backup not found at: {remote_uri}", 404)
         except Exception as e:
             self._json_err(str(e), 500)
 
