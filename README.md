@@ -1,6 +1,6 @@
 # GitDB
 
-GPU-accelerated version-controlled database — vectors, documents, and tables. Three databases in one, all git-versioned. No server. No Docker. No config. `pip install gitdb-vectors` and go.
+GPU-accelerated version-controlled database — vectors, documents, and tables. Three databases in one, all git-versioned. AES-256 encrypted at rest. REST API + gRPC server. Pluggable storage backends (local, S3, GCS, Azure, SFTP). `pip install gitdb-vectors` and go.
 
 ## Why GitDB
 
@@ -12,15 +12,21 @@ GPU-accelerated version-controlled database — vectors, documents, and tables. 
 6. **FoundationDB features** — hooks, transactions, watches, secondary indexes, schema enforcement. Enterprise-grade.
 7. **Spreading activation** — background semantic priming makes frequent queries instant. Multi-hop association chains emerge naturally.
 8. **CLI-first** — `gitdb init && gitdb add --text "doc" && gitdb commit -m "init"`. Works from terminal like git.
-9. **Embedded** — no server, no Docker, no config. `pip install gitdb-vectors` and go.
+9. **Embedded or server** — embedded mode with zero config, or run as a REST/gRPC database server.
+10. **Encrypted at rest** — AES-256-GCM. Key from env, file, or password. Transparent — every object encrypted before hitting disk.
+11. **REST API + gRPC** — `gitdb serve` for REST dashboard + API. `gitdb grpc-serve` for high-performance Protobuf streaming.
+12. **Pluggable storage** — local filesystem, S3, GCS, Azure Blob, MinIO, SFTP. Point your store anywhere.
 
-Git for tensors. MongoDB-style document store. SQLite-style table queries. Arctic/NV-EmbedQA for semantics. CEPH CRUSH placement. P2P distributed. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, schema enforcement. Native backup/restore. Universal ingest (SQLite, MongoDB, CSV, Parquet, PDF, text, S3, GCS, Azure, MinIO, SFTP).
+Git for tensors. MongoDB-style document store. SQLite-style table queries. Arctic/NV-EmbedQA for semantics. CEPH CRUSH placement. P2P distributed. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, schema enforcement. Native backup/restore. Universal ingest. AES-256-GCM encryption. REST API + gRPC server. Pluggable storage backends.
 
 ## Install
 
 ```bash
 pip install -e .                    # Core (torch + zstandard)
 pip install -e ".[embed]"           # + Arctic Embed, NV-EmbedQA
+pip install -e ".[crypto]"          # + AES-256-GCM encryption
+pip install -e ".[grpc]"            # + gRPC/Protobuf server
+pip install -e ".[cloud]"           # + S3, GCS, Azure, SFTP backends
 pip install -e ".[dev]"             # + pytest + embedding models
 ```
 
@@ -1640,13 +1646,112 @@ All-or-nothing. Snapshots state on enter, restores on exception.
 
 ---
 
+## Encryption
+
+```python
+# Option 1: Environment variable
+os.environ["GITDB_KEY"] = EncryptionManager.generate_key().hex()
+db = GitDB("my_store", dim=1024)  # Auto-detects key from env
+
+# Option 2: Password-derived key
+from gitdb import EncryptionManager
+enc = EncryptionManager.from_password("my-secret-password")
+db = GitDB("my_store", dim=1024, encryption=enc)
+
+# Option 3: CLI
+gitdb encrypt init          # Generate key to .gitdb/keyfile
+gitdb encrypt status        # Check if encryption is enabled
+```
+
+AES-256-GCM. Every object, document, and table encrypted before hitting disk. Key from `GITDB_KEY` env, `GITDB_KEY_FILE`, `.gitdb/keyfile`, or password (PBKDF2, 600k iterations).
+
+---
+
+## REST API Server
+
+```bash
+gitdb serve --port 8080     # Launch REST API + web dashboard
+```
+
+```python
+# Full CRUD API
+POST   /api/vectors/add          # Add vectors
+POST   /api/vectors/query        # Semantic search
+POST   /api/docs/insert          # Insert documents
+POST   /api/docs/find            # MongoDB-style query
+POST   /api/tables/{name}/insert # Insert table rows
+POST   /api/tables/{name}/select # SQL-style SELECT
+
+# Git operations
+POST   /api/commit               # Commit changes
+POST   /api/branch               # Create branch
+POST   /api/merge                # Merge branches
+GET    /api/log                  # Commit history
+GET    /api/status               # Store status
+GET    /api/branches             # List branches
+```
+
+Threaded HTTP server with web dashboard. All three data types (vectors, docs, tables) and all git operations exposed via REST.
+
+---
+
+## gRPC / Protobuf
+
+```bash
+gitdb grpc-serve --port 50051   # Launch gRPC server
+```
+
+```python
+from gitdb.grpc_service import GitDBClient
+
+client = GitDBClient("localhost:50051")
+client.insert({"name": "Alice", "age": 30})
+client.find(where={"age": {"$gt": 25}})
+client.commit("added users")
+```
+
+Full Protobuf service definition with streaming support. High-performance alternative to REST for production deployments.
+
+---
+
+## Storage Backends
+
+```python
+from gitdb.storage import parse_storage_uri, copy_between
+
+# Local (default)
+store = parse_storage_uri("/path/to/store")
+
+# S3
+store = parse_storage_uri("s3://my-bucket/gitdb-data")
+
+# MinIO
+store = parse_storage_uri("minio://localhost:9000/mybucket/data")
+
+# Google Cloud Storage
+store = parse_storage_uri("gs://gcs-bucket/prefix")
+
+# Azure Blob
+store = parse_storage_uri("az://mycontainer/prefix")
+
+# SFTP
+store = parse_storage_uri("sftp://user@host.com/data/store")
+
+# Migrate between backends
+copy_between(local_store, s3_store, prefix="objects/")
+```
+
+Pluggable storage with `copy_between()` for zero-downtime migration.
+
+---
+
 ## Architecture
 
 ```
-16,800 lines of Python across 24 modules. 552 tests.
+19,000+ lines of Python across 28 modules. 629 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
-│                    GitDB v0.9.0                               │
+│                    GitDB v0.10.0                              │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  P2P Layer ──→ Distributed Cluster   ← P2P Network          │
@@ -1705,25 +1810,44 @@ All-or-nothing. Snapshots state on enter, restores on exception.
 │       │              │                  stream + ingest      │
 │       │         cloud_ingest.py         temp + cleanup       │
 │       ▼              │                                       │
-│  Dashboard ──→ Web UI                 ← gitdb serve          │
-│       │              │                  commit graph, search │
-│       │         server.py               AC heatmap, queries  │
+│  Encryption ──→ AES-256-GCM           ← Transparent          │
+│       │              │                  encrypt on write      │
+│       │         encryption.py           decrypt on read       │
+│       ▼              │                                       │
+│  Storage ───→ Backend Abstraction      ← Pluggable            │
+│       │              │                  Local, S3, GCS        │
+│       │         storage.py              Azure, SFTP, MinIO   │
+│       ▼              │                                       │
+│  Dashboard ──→ REST API + Web UI       ← gitdb serve          │
+│       │              │                  full CRUD API         │
+│       │         server.py               commit graph, search │
+│       ▼              │                                       │
+│  gRPC ──────→ Protobuf Service         ← gitdb grpc-serve     │
+│       │              │                  streaming, high-perf  │
+│       │         grpc_service.py         client + server       │
 │       ▼              │                                       │
 │  QUERY ──→ Boosted Results                                   │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 
-Modules:
-  core.py          2,383 lines   Main interface (60+ methods)
-  cli.py           1,455 lines   CLI (67+ commands)
+Modules (28):
+  core.py          2,600+ lines  Main interface (70+ methods)
+  cli.py           1,900+ lines  CLI (75+ commands)
+  server.py        1,200+ lines  REST API + web dashboard
+  grpc_service.py    700+ lines  gRPC/Protobuf server + client
+  ingest.py          909 lines   Universal ingest (6 formats)
   distributed.py     765 lines   P2P distributed layer
   crush.py           600 lines   CEPH CRUSH algorithm
+  documents.py       500+ lines  DocumentStore + TableStore
   ambient.py         459 lines   Emirati AC engine
   backup.py          457 lines   Native backup & restore
   remote.py          387 lines   Push/pull/fetch (local + SSH)
+  cloud_ingest.py    349 lines   Cloud storage transport
+  storage.py         300+ lines  Pluggable storage backends
   structured.py      322 lines   Query operators, aggregation
   delta.py           288 lines   Sparse tensor deltas + zstd
-  objects.py         260 lines   Content-addressed object store
+  objects.py         270 lines   Content-addressed object store
+  encryption.py      200+ lines  AES-256-GCM encryption
   working_tree.py    208 lines   GPU-resident tensor + search
   embed.py           200 lines   Arctic + NV-EmbedQA
   pullrequest.py     197 lines   PR store with comments
@@ -1732,9 +1856,6 @@ Modules:
   schema.py          125 lines   JSON Schema validation
   watches.py         123 lines   Change subscriptions
   snapshots.py       118 lines   Read-only frozen views
-  ingest.py          909 lines   Universal ingest (6 formats)
-  cloud_ingest.py    349 lines   Cloud storage transport (S3/GCS/Azure/MinIO/SFTP)
-  server.py          673 lines   Web dashboard (gitdb serve)
   hooks.py            78 lines   Event hook system
 ```
 
@@ -1772,6 +1893,9 @@ Modules:
 | Universal ingest (6 formats) | Yes | No | No | No | No | No |
 | Cloud ingest (S3/GCS/Azure/MinIO/SFTP) | Yes | No | No | No | No | No |
 | Built-in web dashboard | Yes | Cloud | Cloud | Yes | No | No |
+| Encryption at rest | Yes | Cloud | Cloud | No | No | Extension |
+| REST API + gRPC | Both | REST | Both | REST | No | No |
+| Pluggable storage backends | Yes | Cloud | Cloud | Cloud | No | No |
 
 ## LLM Integration
 

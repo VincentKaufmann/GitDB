@@ -49,23 +49,30 @@ def server(db):
 
 
 def get(url):
-    """GET request, return parsed JSON or raw bytes."""
+    """GET request, return parsed JSON (unwrapped from envelope) or raw bytes."""
     req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=5) as resp:
         data = resp.read()
         ct = resp.headers.get("Content-Type", "")
         if "json" in ct:
-            return json.loads(data)
+            parsed = json.loads(data)
+            # Unwrap {"ok": true, "data": {...}} envelope
+            if isinstance(parsed, dict) and "data" in parsed and "ok" in parsed:
+                return parsed["data"]
+            return parsed
         return data
 
 
 def post(url, body):
-    """POST JSON, return parsed JSON."""
+    """POST JSON, return parsed JSON (unwrapped from envelope)."""
     payload = json.dumps(body).encode()
     req = urllib.request.Request(url, data=payload, method="POST")
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read())
+        parsed = json.loads(resp.read())
+        if isinstance(parsed, dict) and "data" in parsed and "ok" in parsed:
+            return parsed["data"]
+        return parsed
 
 
 # ── HTML ──

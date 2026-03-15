@@ -23,6 +23,7 @@ from gitdb.schema import Schema, SchemaError
 from gitdb.snapshots import Snapshot
 from gitdb.watches import WatchManager
 from gitdb.backup import backup_full, backup_incremental, restore, verify, BackupManager
+from gitdb.encryption import EncryptionManager
 from gitdb.working_tree import WorkingTree
 
 
@@ -36,17 +37,23 @@ class GitDB:
         results = db.query(vector=query_vec, k=10)
     """
 
-    def __init__(self, path: str, dim: int = 1024, device: str = "cpu"):
+    def __init__(self, path: str, dim: int = 1024, device: str = "cpu",
+                 encryption: Optional["EncryptionManager"] = None):
         self.path = Path(path)
         self.dim = dim
         self.device = device
+
+        # Encryption — auto-detect from env if not explicitly provided
+        if encryption is None:
+            encryption = EncryptionManager.from_env()
+        self.encryption = encryption
 
         self._gitdb_dir = self.path / ".gitdb"
         self._is_new = not self._gitdb_dir.exists()
 
         # Initialize storage
         self._gitdb_dir.mkdir(parents=True, exist_ok=True)
-        self.objects = ObjectStore(self._gitdb_dir)
+        self.objects = ObjectStore(self._gitdb_dir, encryption=self.encryption)
         self.refs = RefStore(self._gitdb_dir)
 
         # Write config
@@ -118,15 +125,27 @@ class GitDB:
         if not self._is_new:
             self._load_head()
 
+    def _encrypt_bytes(self, data: bytes) -> bytes:
+        if self.encryption and self.encryption.enabled:
+            return self.encryption.encrypt(data)
+        return data
+
+    def _decrypt_bytes(self, data: bytes) -> bytes:
+        if self.encryption and self.encryption.enabled:
+            return self.encryption.decrypt(data)
+        return data
+
     def _save_data_state(self, commit_hash: str):
         """Save document and table state for a commit."""
         self.docs.compact()
         doc_snapshot = self.docs.snapshot()
         if doc_snapshot.strip():
-            (self._docs_dir / f"{commit_hash}.jsonl").write_bytes(doc_snapshot)
+            (self._docs_dir / f"{commit_hash}.jsonl").write_bytes(
+                self._encrypt_bytes(doc_snapshot))
         table_snapshot = self.tables.snapshot()
         if table_snapshot.strip() and table_snapshot != b"{}":
-            (self._tables_dir / f"{commit_hash}.json").write_bytes(table_snapshot)
+            (self._tables_dir / f"{commit_hash}.json").write_bytes(
+                self._encrypt_bytes(table_snapshot))
 
     def _load_data_state(self, commit_hash: Optional[str]):
         """Load document and table state for a commit (or clear if None)."""
@@ -136,12 +155,12 @@ class GitDB:
             return
         doc_file = self._docs_dir / f"{commit_hash}.jsonl"
         if doc_file.exists():
-            self.docs.restore(doc_file.read_bytes())
+            self.docs.restore(self._decrypt_bytes(doc_file.read_bytes()))
         else:
             self.docs = DocumentStore()
         table_file = self._tables_dir / f"{commit_hash}.json"
         if table_file.exists():
-            self.tables.restore(table_file.read_bytes())
+            self.tables.restore(self._decrypt_bytes(table_file.read_bytes()))
         else:
             self.tables = TableStore()
 

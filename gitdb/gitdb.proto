@@ -1,0 +1,216 @@
+syntax = "proto3";
+package gitdb;
+
+// ─── Messages ───────────────────────────────────
+
+message Empty {}
+
+message StatusResponse {
+    string branch = 1;
+    string head = 2;
+    int32 vectors = 3;
+    int32 documents = 4;
+    repeated string tables = 5;
+    int32 table_rows = 6;
+}
+
+message CommitRequest {
+    string message = 1;
+}
+
+message CommitResponse {
+    string hash = 1;
+}
+
+message LogEntry {
+    string hash = 1;
+    string parent = 2;
+    string message = 3;
+    double timestamp = 4;
+    int32 added = 5;
+    int32 removed = 6;
+    int32 modified = 7;
+}
+
+message LogResponse {
+    repeated LogEntry entries = 1;
+}
+
+message BranchRequest {
+    string name = 1;
+}
+
+message SwitchRequest {
+    string branch = 1;
+}
+
+message MergeRequest {
+    string branch = 1;
+    string strategy = 2;
+}
+
+message MergeResponse {
+    string commit_hash = 1;
+    string strategy = 2;
+    int32 added = 3;
+    int32 removed = 4;
+    repeated string conflicts = 5;
+}
+
+// Vector operations
+message AddVectorsRequest {
+    repeated string texts = 1;
+    repeated bytes embeddings = 2;  // serialized tensors
+    string metadata_json = 3;  // JSON array of metadata dicts
+}
+
+message AddVectorsResponse {
+    repeated int32 indices = 1;
+}
+
+message QueryRequest {
+    string text = 1;
+    bytes vector = 2;  // serialized tensor
+    int32 k = 3;
+    string where_json = 4;
+}
+
+message QueryResponse {
+    repeated string ids = 1;
+    repeated float scores = 2;
+    repeated string documents = 3;
+    repeated string metadata_json = 4;
+}
+
+// Document operations
+message InsertDocRequest {
+    string doc_json = 1;  // single doc or array
+}
+
+message InsertDocResponse {
+    repeated string ids = 1;
+}
+
+message FindRequest {
+    string where_json = 1;
+    int32 limit = 2;
+    int32 skip = 3;
+}
+
+message FindResponse {
+    repeated string docs_json = 1;
+}
+
+message UpdateDocRequest {
+    string where_json = 1;
+    string set_json = 2;
+}
+
+message DeleteDocRequest {
+    string where_json = 1;
+}
+
+message CountResponse {
+    int32 count = 1;
+}
+
+// Table operations
+message CreateTableRequest {
+    string name = 1;
+    string columns_json = 2;  // {"name": "text", "age": "integer"}
+}
+
+message TableInsertRequest {
+    string table = 1;
+    string rows_json = 2;  // single row or array
+}
+
+message TableSelectRequest {
+    string table = 1;
+    string columns_json = 2;
+    string where_json = 3;
+    string order_by = 4;
+    bool desc = 5;
+    int32 limit = 6;
+    int32 offset = 7;
+}
+
+message TableSelectResponse {
+    repeated string rows_json = 1;
+}
+
+message TableUpdateRequest {
+    string table = 1;
+    string where_json = 2;
+    string set_json = 3;
+}
+
+message TableDeleteRequest {
+    string table = 1;
+    string where_json = 2;
+}
+
+message StashRequest {
+    string message = 1;
+}
+
+message StashEntry {
+    int32 index = 1;
+    string message = 2;
+    double timestamp = 3;
+}
+
+message StashListResponse {
+    repeated StashEntry entries = 1;
+}
+
+message RefRequest {
+    string ref = 1;
+}
+
+message BranchListResponse {
+    map<string, string> branches = 1;
+    string current = 2;
+}
+
+message TableListResponse {
+    repeated string names = 1;
+}
+
+// ─── Service ───────────────────────────────────
+
+service GitDBService {
+    // Git operations
+    rpc Status(Empty) returns (StatusResponse);
+    rpc Commit(CommitRequest) returns (CommitResponse);
+    rpc Log(Empty) returns (LogResponse);
+    rpc Branch(BranchRequest) returns (Empty);
+    rpc Switch(SwitchRequest) returns (Empty);
+    rpc Merge(MergeRequest) returns (MergeResponse);
+    rpc Stash(StashRequest) returns (Empty);
+    rpc StashPop(Empty) returns (StashEntry);
+    rpc StashList(Empty) returns (StashListResponse);
+    rpc Reset(RefRequest) returns (Empty);
+    rpc CherryPick(RefRequest) returns (CommitResponse);
+    rpc Revert(RefRequest) returns (CommitResponse);
+    rpc Branches(Empty) returns (BranchListResponse);
+
+    // Vector operations
+    rpc AddVectors(AddVectorsRequest) returns (AddVectorsResponse);
+    rpc QueryVectors(QueryRequest) returns (QueryResponse);
+
+    // Document operations
+    rpc InsertDoc(InsertDocRequest) returns (InsertDocResponse);
+    rpc FindDocs(FindRequest) returns (FindResponse);
+    rpc UpdateDocs(UpdateDocRequest) returns (CountResponse);
+    rpc DeleteDocs(DeleteDocRequest) returns (CountResponse);
+    rpc CountDocs(FindRequest) returns (CountResponse);
+
+    // Table operations
+    rpc CreateTable(CreateTableRequest) returns (Empty);
+    rpc ListTables(Empty) returns (TableListResponse);
+    rpc TableInsert(TableInsertRequest) returns (CountResponse);
+    rpc TableSelect(TableSelectRequest) returns (TableSelectResponse);
+    rpc TableUpdate(TableUpdateRequest) returns (CountResponse);
+    rpc TableDelete(TableDeleteRequest) returns (CountResponse);
+}

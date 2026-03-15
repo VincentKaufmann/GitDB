@@ -77,15 +77,28 @@ class ObjectStore:
 
     Layout:
         .gitdb/objects/ab/c123def456...  → object bytes
+
+    Optional encryption: pass an EncryptionManager to encrypt at rest.
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, encryption=None):
         self.root = root / "objects"
         self.root.mkdir(parents=True, exist_ok=True)
+        self._encryption = encryption
 
     def _path(self, obj_hash: str) -> Path:
         """Two-character prefix directory (like git)."""
         return self.root / obj_hash[:2] / obj_hash[2:]
+
+    def _encrypt(self, data: bytes) -> bytes:
+        if self._encryption and self._encryption.enabled:
+            return self._encryption.encrypt(data)
+        return data
+
+    def _decrypt(self, data: bytes) -> bytes:
+        if self._encryption and self._encryption.enabled:
+            return self._encryption.decrypt(data)
+        return data
 
     def has(self, obj_hash: str) -> bool:
         return self._path(obj_hash).exists()
@@ -94,7 +107,7 @@ class ObjectStore:
         p = self._path(obj_hash)
         if not p.exists():
             raise KeyError(f"Object not found: {obj_hash[:12]}...")
-        return p.read_bytes()
+        return self._decrypt(p.read_bytes())
 
     def write(self, data: bytes) -> str:
         """Write data, return its SHA-256 hash."""
@@ -104,7 +117,7 @@ class ObjectStore:
             p.parent.mkdir(parents=True, exist_ok=True)
             # Atomic write via temp file
             tmp = p.with_suffix(".tmp")
-            tmp.write_bytes(data)
+            tmp.write_bytes(self._encrypt(data))
             tmp.rename(p)
         return h
 
@@ -119,7 +132,7 @@ class ObjectStore:
         if not p.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(".tmp")
-            tmp.write_bytes(data)
+            tmp.write_bytes(self._encrypt(data))
             tmp.rename(p)
         return commit.hash
 

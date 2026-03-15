@@ -947,6 +947,49 @@ def cmd_show_tables(args):
         print(f"  {name}: {t.size} rows{cols}")
 
 
+# ═══════════════════════════════════════════════════════════════
+#  Encryption commands
+# ═══════════════════════════════════════════════════════════════
+
+def cmd_encrypt(args):
+    """Encryption key management."""
+    action = args.action
+    if action == "init":
+        from gitdb.encryption import EncryptionManager
+        key = EncryptionManager.generate_key()
+        store_path = find_store(args.path)
+        if store_path:
+            keyfile = Path(store_path) / ".gitdb" / "keyfile"
+            keyfile.write_bytes(key)
+            print(f"Generated encryption key → {keyfile}")
+            print("Add .gitdb/keyfile to .gitignore — never commit this file.")
+        else:
+            print(f"GITDB_KEY={key.hex()}")
+            print("Set this environment variable to enable encryption.")
+    elif action == "status":
+        db = load_db(args)
+        if db.encryption and db.encryption.enabled:
+            print("Encryption: enabled (AES-256-GCM)")
+        else:
+            print("Encryption: disabled")
+            print("Run 'gitdb encrypt init' or set GITDB_KEY to enable.")
+    else:
+        print(f"Unknown encrypt action: {action}")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  gRPC serve command
+# ═══════════════════════════════════════════════════════════════
+
+def cmd_grpc_serve(args):
+    """Launch gRPC server."""
+    from gitdb.grpc_service import serve_grpc
+    store_path = find_store(args.path) or args.path
+    port = args.port
+    print(f"Starting gRPC server on :{port} → {store_path}")
+    serve_grpc(store_path, port=port)
+
+
 def cmd_embed(args):
     """Embedding model management and one-shot embedding."""
     if args.action == "list":
@@ -1774,6 +1817,14 @@ def main():
     # show-tables
     sub.add_parser("show-tables", help="List all tables")
 
+    # Encryption
+    p = sub.add_parser("encrypt", help="Encryption key management")
+    p.add_argument("action", choices=["init", "status"], help="init or status")
+
+    # gRPC
+    p = sub.add_parser("grpc-serve", help="Launch gRPC server")
+    p.add_argument("--port", type=int, default=50051, help="gRPC port")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -1847,6 +1898,8 @@ def main():
         "table-delete": cmd_table_delete,
         "drop-table": cmd_drop_table,
         "show-tables": cmd_show_tables,
+        "encrypt": cmd_encrypt,
+        "grpc-serve": cmd_grpc_serve,
     }
 
     fn = dispatch.get(args.command)
