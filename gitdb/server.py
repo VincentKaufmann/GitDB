@@ -39,6 +39,16 @@ header .meta{color:var(--dim);font-size:12px;display:flex;gap:16px}
 header .meta .branch{color:var(--green)}
 header .meta .hash{color:var(--yellow)}
 
+/* Device picker */
+.device-picker{position:relative;display:inline-block}
+.device-picker select{appearance:none;-webkit-appearance:none;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 28px 4px 10px;border-radius:4px;font-family:inherit;font-size:12px;cursor:pointer;outline:none;transition:border-color .2s}
+.device-picker select:focus{border-color:var(--blue)}
+.device-picker select:hover{border-color:var(--dim)}
+.device-picker::after{content:'▾';position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--dim);font-size:10px;pointer-events:none}
+.device-picker .active-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px}
+.device-picker .active-dot.gpu{background:var(--green)}
+.device-picker .active-dot.cpu{background:var(--yellow)}
+
 .main{display:flex;flex:1;overflow:hidden}
 .sidebar{width:220px;background:var(--bg2);border-right:1px solid var(--border);padding:16px;overflow-y:auto;flex-shrink:0}
 .content{flex:1;overflow-y:auto;padding:24px}
@@ -128,6 +138,12 @@ footer span{display:flex;align-items:center;gap:4px}
       <span class="path" id="hdr-path"></span>
       <span>branch: <span class="branch" id="hdr-branch"></span></span>
       <span>HEAD: <span class="hash" id="hdr-head"></span></span>
+      <span class="device-picker">
+        <span class="active-dot cpu" id="device-dot"></span>
+        <select id="device-select" onchange="switchDevice(this.value)">
+          <option value="cpu">CPU</option>
+        </select>
+      </span>
     </div>
   </header>
 
@@ -436,7 +452,58 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// ── Device picker ──
+async function loadDevices() {
+  const resp = await api('/api/devices');
+  if (!resp || !resp.ok) return;
+  const sel = $('#device-select');
+  const dot = $('#device-dot');
+  sel.innerHTML = '';
+  for (const dev of resp.data.devices) {
+    const opt = document.createElement('option');
+    opt.value = dev.id;
+    let label = dev.name || dev.id;
+    if (dev.memory_gb) label += ' (' + dev.memory_gb + ' GB)';
+    if (dev.compute_capability) label += ' [CC ' + dev.compute_capability + ']';
+    opt.textContent = label;
+    if (dev.active) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  updateDeviceDot(resp.data.current);
+}
+
+function updateDeviceDot(device) {
+  const dot = $('#device-dot');
+  dot.className = 'active-dot ' + (device === 'cpu' ? 'cpu' : 'gpu');
+  $('#ft-device').textContent = 'device: ' + device;
+}
+
+async function switchDevice(device) {
+  const sel = $('#device-select');
+  sel.disabled = true;
+  const resp = await api('/api/device/switch', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({device})
+  });
+  sel.disabled = false;
+  if (resp && resp.ok) {
+    updateDeviceDot(resp.data.device);
+    if (resp.data.changed) {
+      // Brief flash to show it worked
+      sel.style.borderColor = 'var(--green)';
+      setTimeout(() => sel.style.borderColor = '', 1000);
+    }
+  } else {
+    // Revert selection
+    loadDevices();
+    sel.style.borderColor = 'var(--red)';
+    setTimeout(() => sel.style.borderColor = '', 1500);
+  }
+}
+
 init();
+loadDevices();
 </script>
 </body>
 </html>"""
@@ -542,6 +609,9 @@ class GitDBHandler(BaseHTTPRequestHandler):
             elif route == "/api/status":
                 self._h_status()
 
+            elif route == "/api/devices":
+                self._h_devices()
+
             elif route == "/api/log":
                 limit = int(params.get("limit", [50])[0])
                 self._h_log(limit)
@@ -614,6 +684,10 @@ class GitDBHandler(BaseHTTPRequestHandler):
                 self._h_cherry_pick(body)
             elif route == "/api/revert":
                 self._h_revert(body)
+
+            # --- Device Operations ---
+            elif route == "/api/device/switch":
+                self._h_device_switch(body)
 
             # --- Vector Operations ---
             elif route == "/api/vectors/add":
@@ -698,7 +772,69 @@ class GitDBHandler(BaseHTTPRequestHandler):
         s["path"] = str(db.path)
         s["dim"] = db.dim
         s["device"] = db.device
+        # Include available devices in status
+        import torch
+        available = ["cpu"]
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                name = torch.cuda.get_device_name(i)
+                available.append({"id": f"cuda:{i}", "name": name,
+                                  "memory_gb": round(torch.cuda.get_device_properties(i).total_mem / 1e9, 1)})
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            available.append({"id": "mps", "name": "Apple Metal (MPS)"})
+        s["available_devices"] = available
         self._json_ok(s)
+
+    def _h_devices(self):
+        import torch
+        current = self.db.device
+        devices = []
+        # CPU
+        devices.append({"id": "cpu", "name": "CPU", "active": current == "cpu"})
+        # CUDA
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                dev_id = f"cuda:{i}" if torch.cuda.device_count() > 1 else "cuda"
+                props = torch.cuda.get_device_properties(i)
+                devices.append({
+                    "id": dev_id,
+                    "name": torch.cuda.get_device_name(i),
+                    "active": current in (dev_id, "cuda") and (i == 0 or dev_id == current),
+                    "memory_gb": round(props.total_mem / 1e9, 1),
+                    "compute_capability": f"{props.major}.{props.minor}",
+                })
+        # MPS
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            devices.append({"id": "mps", "name": "Apple Metal (MPS)", "active": current == "mps"})
+        self._json_ok({"current": current, "devices": devices})
+
+    def _h_device_switch(self, body):
+        import torch
+        target = body.get("device", "").strip()
+        if not target:
+            self._json_err("Missing 'device' field", 400)
+            return
+        valid = {"cpu"}
+        if torch.cuda.is_available():
+            valid.add("cuda")
+            for i in range(torch.cuda.device_count()):
+                valid.add(f"cuda:{i}")
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            valid.add("mps")
+        if target not in valid:
+            self._json_err(f"Invalid device '{target}'. Available: {sorted(valid)}", 400)
+            return
+        db = self.db
+        old_device = db.device
+        if target == old_device:
+            self._json_ok({"device": target, "changed": False, "message": f"Already on {target}"})
+            return
+        # Move tensors to new device
+        db.device = target
+        if db.tree.embeddings is not None and db.tree.embeddings.numel() > 0:
+            db.tree.embeddings = db.tree.embeddings.to(target)
+        self._json_ok({"device": target, "changed": True, "previous": old_device,
+                        "message": f"Moved from {old_device} to {target}"})
 
     # ── Git: Log ──
 

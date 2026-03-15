@@ -21,6 +21,8 @@ The server does not know what it stores. It does not know what it queries. It do
 
 This is not encryption at rest. This is not encryption in transit. This is **encryption during computation**. The data is encrypted while the CPU is doing math on it.
 
+**The first database that can do this.** CryptDB decrypts for JOINs. StealthDB decrypts inside Intel SGX enclaves. Microsoft Always Encrypted can't query encrypted columns. MongoDB CSFLE treats encrypted fields as opaque blobs. Zama and Google ship FHE toolkits, not databases. GitDB is the first database where data is encrypted for the entire lifecycle — storage, query, computation, version control — with the server never seeing plaintext.
+
 ## v0.13.1 Benchmark — Full Encrypted Stack
 
 Every operation benchmarked. Query data, diff branches, merge commits — all encrypted, all GPU-accelerated.
@@ -2295,7 +2297,7 @@ Nobody's done this. DVC versions files. MLflow tracks experiments. W&B tracks me
 24,000+ lines of Python across 31 modules. 708 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
-│                    GitDB v0.10.0                              │
+│                    GitDB v0.13.1                              │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  P2P Layer ──→ Distributed Cluster   ← P2P Network          │
