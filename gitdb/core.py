@@ -341,7 +341,7 @@ class GitDB:
         results = []
 
         for entry in blame_entries:
-            idx = entry.vector_idx
+            idx = entry.row_index
             if idx < self.tree.embeddings.shape[0]:
                 sim = similarity(q, self.tree.embeddings[idx].unsqueeze(0).cpu()).item()
                 if sim >= threshold:

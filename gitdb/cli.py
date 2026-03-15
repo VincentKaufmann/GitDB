@@ -295,8 +295,15 @@ def cmd_merge(args):
 def cmd_cherry_pick(args):
     db = load_db(args)
     try:
+        # Show what we're picking
+        source_info = db.show(args.ref)
         h = db.cherry_pick(args.ref)
-        print(f"Cherry-picked → {h[:8]}")
+        print(f"\033[33mcherry-pick {args.ref[:12]} → {h[:8]}\033[0m")
+        print(f"  {source_info['message']}")
+        print(f"  +{source_info['stats']['added']} -{source_info['stats']['removed']} ~{source_info['stats']['modified']}")
+        # Show what changed
+        new_info = db.show(h)
+        print(f"  {new_info['tensor_rows']} rows total")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -305,8 +312,12 @@ def cmd_cherry_pick(args):
 def cmd_revert(args):
     db = load_db(args)
     try:
+        # Show what we're reverting
+        source_info = db.show(args.ref)
         h = db.revert(args.ref)
-        print(f"Reverted → {h[:8]}")
+        print(f"\033[33mrevert {args.ref[:12]} → {h[:8]}\033[0m")
+        print(f"  Reverted: \"{source_info['message']}\"")
+        print(f"  Undid: +{source_info['stats']['added']} -{source_info['stats']['removed']} ~{source_info['stats']['modified']}")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -317,7 +328,8 @@ def cmd_stash(args):
     if args.action == "pop":
         try:
             entry = db.stash_pop()
-            print(f"Popped stash: {entry.message}")
+            print(f"Popped stash@{{{entry.index}}}: {entry.message}")
+            print(f"  Restored {db.tree.size} vectors")
         except (ValueError, IndexError) as e:
             print(f"fatal: {e}", file=sys.stderr)
             sys.exit(1)
@@ -330,8 +342,15 @@ def cmd_stash(args):
             print(f"  stash@{{{e.index}}}: {e.message}  ({ts})")
     else:
         try:
+            status = db.status()
             db.stash(args.message or "WIP")
-            print(f"Stashed working tree")
+            stashes = db.stash_list()
+            idx = stashes[-1].index if stashes else 0
+            adds = status.get("staged_additions", 0)
+            dels = status.get("staged_deletions", 0)
+            mods = status.get("staged_modifications", 0)
+            print(f"Saved working directory on {status.get('branch', '?')}: stash@{{{idx}}}")
+            print(f"  {status.get('total_vectors', 0)} vectors, {adds} staged additions, {dels} deletions, {mods} modifications")
         except ValueError as e:
             print(f"fatal: {e}", file=sys.stderr)
             sys.exit(1)
@@ -439,6 +458,12 @@ def cmd_rebase(args):
     try:
         new = db.rebase(args.onto)
         print(f"Rebased {len(new)} commits onto {args.onto}")
+        for h in new:
+            try:
+                info = db.show(h)
+                print(f"  \033[33m{h[:8]}\033[0m {info['message']}  (+{info['stats']['added']} -{info['stats']['removed']} ~{info['stats']['modified']})")
+            except Exception:
+                print(f"  \033[33m{h[:8]}\033[0m")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -460,7 +485,10 @@ def cmd_filter_branch(args):
         sys.exit(1)
 
     h = db.filter_branch(transforms[args.transform], args.transform)
+    info = db.show(h)
     print(f"Applied '{args.transform}' → {h[:8]}")
+    print(f"  {info['message']}")
+    print(f"  {info['tensor_rows']} vectors transformed")
 
 
 def cmd_show(args):
@@ -486,7 +514,9 @@ def cmd_amend(args):
     db = load_db(args)
     try:
         h = db.amend(message=args.message)
-        print(f"Amended → {h[:8]}")
+        info = db.show(h)
+        print(f"\033[33m[{db.refs.current_branch} {h[:8]}]\033[0m {info['message']}")
+        print(f"  +{info['stats']['added']} -{info['stats']['removed']} ~{info['stats']['modified']} | {info['tensor_rows']} rows")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -496,7 +526,10 @@ def cmd_squash(args):
     db = load_db(args)
     try:
         h = db.squash(args.n, message=args.message)
-        print(f"Squashed {args.n} commits → {h[:8]}")
+        info = db.show(h)
+        print(f"\033[33m[{db.refs.current_branch} {h[:8]}]\033[0m Squashed {args.n} commits")
+        print(f"  {info['message']}")
+        print(f"  +{info['stats']['added']} -{info['stats']['removed']} ~{info['stats']['modified']} | {info['tensor_rows']} rows")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -653,6 +686,31 @@ def cmd_pr(args):
             print(f"  Created: {ts}")
             if pr.description:
                 print(f"\n  {pr.description}\n")
+            # Show diff preview if PR is open
+            if pr.status == "open":
+                try:
+                    d = db.diff(pr.target_branch, pr.source_branch)
+                    if d.added_count or d.removed_count or d.modified_count:
+                        print(f"\n  Changes: \033[32m+{d.added_count}\033[0m \033[31m-{d.removed_count}\033[0m \033[33m~{d.modified_count}\033[0m")
+                        print()
+                        unified = d.unified(pr.target_branch, pr.source_branch)
+                        for line in unified.splitlines():
+                            if line.startswith("diff --gitdb"):
+                                print(f"  \033[1m{line}\033[0m")
+                            elif line.startswith("---"):
+                                print(f"  \033[1;31m{line}\033[0m")
+                            elif line.startswith("+++"):
+                                print(f"  \033[1;32m{line}\033[0m")
+                            elif line.startswith("@@"):
+                                print(f"  \033[36m{line}\033[0m")
+                            elif line.startswith("-"):
+                                print(f"  \033[31m{line}\033[0m")
+                            elif line.startswith("+"):
+                                print(f"  \033[32m{line}\033[0m")
+                            else:
+                                print(f"  {line}")
+                except Exception:
+                    pass
             if pr.comments:
                 print(f"\n  Comments ({len(pr.comments)}):")
                 for i, c in enumerate(pr.comments):
@@ -666,7 +724,13 @@ def cmd_pr(args):
     elif args.action == "merge":
         try:
             result = db.pr_merge(args.pr_id, strategy=args.strategy or "union")
-            print(f"Merged PR #{args.pr_id} → {result.commit_hash[:8]}")
+            print(f"Merged PR #{args.pr_id} → {result.commit_hash[:8]} ({result.strategy})")
+            if result.added:
+                print(f"  \033[32m+{result.added} vectors added\033[0m")
+            if result.removed:
+                print(f"  \033[31m-{result.removed} vectors removed\033[0m")
+            if result.has_conflicts:
+                print(f"  \033[31m{len(result.conflicts)} conflicts\033[0m")
         except ValueError as e:
             print(f"fatal: {e}", file=sys.stderr)
             sys.exit(1)
