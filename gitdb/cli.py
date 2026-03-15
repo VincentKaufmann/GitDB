@@ -74,6 +74,9 @@ def cmd_status(args):
     # Document info
     if s.get('documents', 0) > 0:
         print(f"  {s['documents']} documents")
+    # Table info
+    if s.get('tables'):
+        print(f"  {len(s['tables'])} table(s): {', '.join(s['tables'])} ({s.get('table_rows', 0)} rows)")
 
     staged = s["staged_additions"] + s["staged_deletions"] + s["staged_modifications"]
     doc_staged = s.get("staged_doc_inserts", 0) + s.get("staged_doc_updates", 0) + s.get("staged_doc_deletes", 0)
@@ -91,6 +94,8 @@ def cmd_status(args):
             print(f"  modified: {s['staged_doc_updates']} documents")
         if s.get("staged_doc_deletes"):
             print(f"  deleted:  {s['staged_doc_deletes']} documents")
+        if s.get("staged_table_changes"):
+            print(f"  tables:   {s['staged_table_changes']} table change(s)")
     else:
         print("\nnothing to commit, working tree clean")
 
@@ -834,6 +839,112 @@ def cmd_doc_delete(args):
     where = json.loads(args.where)
     count = db.delete_docs(where)
     print(f"Deleted {count} document(s)")
+
+
+def cmd_create_table(args):
+    """Create a named table."""
+    db = load_db(args)
+    columns = json.loads(args.columns) if args.columns else None
+    db.create_table(args.name, columns)
+    if columns:
+        cols = ", ".join(f"{k} {v}" for k, v in columns.items())
+        print(f"CREATE TABLE {args.name} ({cols})")
+    else:
+        print(f"CREATE TABLE {args.name} (schemaless)")
+
+
+def cmd_table_insert(args):
+    """Insert into a named table."""
+    db = load_db(args)
+    try:
+        row = json.loads(args.row)
+    except json.JSONDecodeError as e:
+        print(f"fatal: invalid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+    if isinstance(row, list):
+        ids = db.insert_into(args.table, row)
+        print(f"INSERT {len(ids)} rows into {args.table}")
+    else:
+        _id = db.insert_into(args.table, row)
+        print(f"INSERT 1 row into {args.table} (rowid={_id})")
+
+
+def cmd_table_select(args):
+    """SELECT from a named table."""
+    db = load_db(args)
+    where = json.loads(args.where) if args.where else None
+    columns = args.columns.split(",") if args.columns else None
+    try:
+        rows = db.select_from(
+            args.table,
+            columns=columns,
+            where=where,
+            order_by=args.order_by,
+            desc=args.desc,
+            limit=args.limit,
+            offset=args.offset or 0,
+        )
+    except ValueError as e:
+        print(f"fatal: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not rows:
+        print("(0 rows)")
+        return
+    # Table output
+    if rows:
+        headers = list(rows[0].keys())
+        widths = [max(len(str(h)), max(len(str(r.get(h, ""))) for r in rows)) for h in headers]
+        widths = [min(w, 50) for w in widths]
+        hdr = " | ".join(str(h).ljust(w) for h, w in zip(headers, widths))
+        sep = "-+-".join("-" * w for w in widths)
+        print(f" {hdr}")
+        print(f"-{sep}-")
+        for row in rows:
+            vals = []
+            for h, w in zip(headers, widths):
+                v = str(row.get(h, ""))
+                if len(v) > w:
+                    v = v[:w-3] + "..."
+                vals.append(v.ljust(w))
+            print(f" {' | '.join(vals)}")
+        print(f"({len(rows)} rows)")
+
+
+def cmd_table_update(args):
+    """UPDATE rows in a table."""
+    db = load_db(args)
+    where = json.loads(args.where)
+    set_fields = json.loads(args.set)
+    count = db.update_table(args.table, where, set_fields)
+    print(f"UPDATE {count}")
+
+
+def cmd_table_delete(args):
+    """DELETE from a table."""
+    db = load_db(args)
+    where = json.loads(args.where)
+    count = db.delete_from(args.table, where)
+    print(f"DELETE {count}")
+
+
+def cmd_drop_table(args):
+    """Drop a table."""
+    db = load_db(args)
+    db.drop_table(args.name)
+    print(f"DROP TABLE {args.name}")
+
+
+def cmd_show_tables(args):
+    """List all tables."""
+    db = load_db(args)
+    tables = db.list_tables()
+    if not tables:
+        print("No tables")
+        return
+    for name in tables:
+        t = db.table(name)
+        cols = f" ({', '.join(f'{k} {v}' for k, v in t.columns.items())})" if t.columns else ""
+        print(f"  {name}: {t.size} rows{cols}")
 
 
 def cmd_embed(args):
@@ -1625,6 +1736,44 @@ def main():
     p = sub.add_parser("count", help="Count documents")
     p.add_argument("--where", help="Query filter JSON")
 
+    # create-table
+    p = sub.add_parser("create-table", help="Create a named table")
+    p.add_argument("name", help="Table name")
+    p.add_argument("--columns", help='Column schema JSON: {"name": "text", "age": "integer"}')
+
+    # table-insert
+    p = sub.add_parser("table-insert", help="Insert rows into a table")
+    p.add_argument("table", help="Table name")
+    p.add_argument("row", help="Row JSON (or array of rows)")
+
+    # table-select
+    p = sub.add_parser("table-select", help="SELECT from a table")
+    p.add_argument("table", help="Table name")
+    p.add_argument("--columns", help="Comma-separated columns")
+    p.add_argument("--where", help="Filter JSON")
+    p.add_argument("--order-by", help="Sort by column")
+    p.add_argument("--desc", action="store_true", help="Sort descending")
+    p.add_argument("--limit", type=int, help="Max rows")
+    p.add_argument("--offset", type=int, default=0, help="Skip rows")
+
+    # table-update
+    p = sub.add_parser("table-update", help="UPDATE rows in a table")
+    p.add_argument("table", help="Table name")
+    p.add_argument("--where", required=True, help="Filter JSON")
+    p.add_argument("--set", required=True, help="Fields to set (JSON)")
+
+    # table-delete
+    p = sub.add_parser("table-delete", help="DELETE from a table")
+    p.add_argument("table", help="Table name")
+    p.add_argument("--where", required=True, help="Filter JSON")
+
+    # drop-table
+    p = sub.add_parser("drop-table", help="Drop a table")
+    p.add_argument("name", help="Table name")
+
+    # show-tables
+    sub.add_parser("show-tables", help="List all tables")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -1691,6 +1840,13 @@ def main():
         "update": cmd_doc_update,
         "delete": cmd_doc_delete,
         "count": lambda args: print(f"{load_db(args).count_docs(where=json.loads(args.where) if args.where else None)} document(s)"),
+        "create-table": cmd_create_table,
+        "table-insert": cmd_table_insert,
+        "table-select": cmd_table_select,
+        "table-update": cmd_table_update,
+        "table-delete": cmd_table_delete,
+        "drop-table": cmd_drop_table,
+        "show-tables": cmd_show_tables,
     }
 
     fn = dispatch.get(args.command)

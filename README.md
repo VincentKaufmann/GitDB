@@ -1643,7 +1643,7 @@ All-or-nothing. Snapshots state on enter, restores on exception.
 ## Architecture
 
 ```
-15,200 lines of Python across 24 modules. 514 tests.
+16,800 lines of Python across 24 modules. 552 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
 │                    GitDB v0.9.0                               │

@@ -1,16 +1,15 @@
-"""Document store — versioned JSON document storage without vectors.
+"""Document & Table store — versioned JSON + SQL storage without vectors.
 
-Turns GitDB into a MongoDB/SQLite replacement. Documents are plain JSON
-objects stored in collections, versioned through the same git commit
-system as vectors.
+MongoDB replacement:
+    db.collection("users").insert({"name": "Alice", "age": 30})
+    db.collection("users").find(where={"age": {"$gt": 25}})
 
-Usage:
-    db = GitDB("my_store", dim=0)  # dim=0 = document-only mode
-    db.insert({"name": "Alice", "age": 30, "role": "engineer"})
-    db.insert_many([{"name": "Bob"}, {"name": "Charlie"}])
-    db.find(where={"age": {"$gt": 25}})
-    db.select(columns=["name", "age"], where={"role": "engineer"})
-    db.commit("Added users")
+SQLite replacement:
+    db.create_table("users", {"name": "text", "age": "integer", "email": "text"})
+    db.table("users").insert({"name": "Alice", "age": 30, "email": "a@b.com"})
+    db.table("users").select(columns=["name"], where={"age": {"$gt": 25}})
+
+Both versioned through git: commit, branch, merge, stash, cherry-pick, diff.
 """
 
 import hashlib
@@ -19,6 +18,267 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Table — SQLite-style named table with column schema
+# ═══════════════════════════════════════════════════════════════
+
+COLUMN_TYPES = {
+    "text": str, "string": str, "str": str,
+    "integer": int, "int": int,
+    "float": float, "real": float, "number": float,
+    "boolean": bool, "bool": bool,
+    "json": (dict, list),
+    "any": object,
+}
+
+
+class Table:
+    """A named table with optional column schema enforcement.
+
+    Like an SQLite table: named, typed columns, INSERT/SELECT/UPDATE/DELETE.
+    Schema is optional — omit it for schemaless (MongoDB-like) behavior.
+    """
+
+    def __init__(self, name: str, columns: Optional[Dict[str, str]] = None):
+        self.name = name
+        self.columns = columns  # {"name": "text", "age": "integer"} or None
+        self._rows: List[Dict[str, Any]] = []
+        self._tombstones: set = set()
+        self._auto_id = 0
+
+    @property
+    def size(self) -> int:
+        return len(self._rows) - len(self._tombstones)
+
+    def _validate(self, row: Dict[str, Any]):
+        """Validate row against column schema."""
+        if not self.columns:
+            return
+        for col, col_type in self.columns.items():
+            if col in row and row[col] is not None:
+                expected = COLUMN_TYPES.get(col_type, object)
+                if expected is not object and not isinstance(row[col], expected):
+                    try:
+                        # Try coercion
+                        if expected is int:
+                            row[col] = int(row[col])
+                        elif expected is float:
+                            row[col] = float(row[col])
+                        elif expected is str:
+                            row[col] = str(row[col])
+                        elif expected is bool:
+                            row[col] = bool(row[col])
+                    except (ValueError, TypeError):
+                        raise ValueError(
+                            f"Column '{col}' expects {col_type}, got {type(row[col]).__name__}"
+                        )
+
+    def insert(self, row: Dict[str, Any]) -> int:
+        """Insert a row. Returns row ID."""
+        row = dict(row)
+        if "_rowid" not in row:
+            self._auto_id += 1
+            row["_rowid"] = self._auto_id
+        self._validate(row)
+        self._rows.append(row)
+        return row["_rowid"]
+
+    def insert_many(self, rows: List[Dict[str, Any]]) -> List[int]:
+        return [self.insert(r) for r in rows]
+
+    def select(
+        self,
+        columns: Optional[List[str]] = None,
+        where: Optional[Dict[str, Any]] = None,
+        order_by: Optional[str] = None,
+        desc: bool = False,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """SQL-style SELECT."""
+        rows = []
+        for i, row in enumerate(self._rows):
+            if i in self._tombstones:
+                continue
+            if where and not _match_doc(row, where):
+                continue
+            rows.append(row)
+
+        if order_by:
+            rows.sort(
+                key=lambda r: (r.get(order_by) is None, r.get(order_by, "")),
+                reverse=desc,
+            )
+        if offset:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+        if columns:
+            rows = [{c: r.get(c) for c in columns} for r in rows]
+        return rows
+
+    def update(self, where: Dict[str, Any], set_fields: Dict[str, Any]) -> int:
+        """UPDATE rows matching where."""
+        count = 0
+        for i, row in enumerate(self._rows):
+            if i in self._tombstones:
+                continue
+            if _match_doc(row, where):
+                for k, v in set_fields.items():
+                    row[k] = v
+                self._validate(row)
+                count += 1
+        return count
+
+    def delete(self, where: Dict[str, Any]) -> int:
+        """DELETE rows matching where."""
+        count = 0
+        for i, row in enumerate(self._rows):
+            if i in self._tombstones:
+                continue
+            if _match_doc(row, where):
+                self._tombstones.add(i)
+                count += 1
+        return count
+
+    def count(self, where: Optional[Dict[str, Any]] = None) -> int:
+        if where is None:
+            return self.size
+        return len(self.select(where=where))
+
+    def distinct(self, field: str, where: Optional[Dict[str, Any]] = None) -> List[Any]:
+        rows = self.select(where=where)
+        seen = set()
+        result = []
+        for r in rows:
+            v = r.get(field)
+            key = v if not isinstance(v, dict) else json.dumps(v, sort_keys=True)
+            if v is not None and key not in seen:
+                seen.add(key)
+                result.append(v)
+        return result
+
+    def aggregate(
+        self, group_by: str, agg_field: Optional[str] = None,
+        agg_fn: str = "count", where: Optional[Dict[str, Any]] = None,
+    ) -> Dict[Any, Any]:
+        rows = self.select(where=where)
+        groups: Dict[Any, List] = {}
+        for r in rows:
+            key = r.get(group_by, "__null__")
+            groups.setdefault(key, []).append(r)
+        result = {}
+        for key, group in groups.items():
+            if agg_fn == "count":
+                result[key] = len(group)
+            elif agg_fn == "collect":
+                result[key] = [r.get(agg_field) for r in group] if agg_field else group
+            elif agg_field:
+                vals = [r.get(agg_field) for r in group if isinstance(r.get(agg_field), (int, float))]
+                if not vals:
+                    result[key] = None
+                elif agg_fn == "sum":
+                    result[key] = sum(vals)
+                elif agg_fn == "avg":
+                    result[key] = sum(vals) / len(vals)
+                elif agg_fn == "min":
+                    result[key] = min(vals)
+                elif agg_fn == "max":
+                    result[key] = max(vals)
+            else:
+                result[key] = len(group)
+        return result
+
+    def compact(self):
+        self._rows = [r for i, r in enumerate(self._rows) if i not in self._tombstones]
+        self._tombstones.clear()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize table to dict for persistence."""
+        self.compact()
+        return {
+            "name": self.name,
+            "columns": self.columns,
+            "auto_id": self._auto_id,
+            "rows": list(self._rows),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Table":
+        """Restore table from dict."""
+        t = cls(data["name"], data.get("columns"))
+        t._auto_id = data.get("auto_id", 0)
+        t._rows = data.get("rows", [])
+        return t
+
+    def __repr__(self):
+        cols = f", columns={list(self.columns.keys())}" if self.columns else ""
+        return f"Table('{self.name}', {self.size} rows{cols})"
+
+
+# ═══════════════════════════════════════════════════════════════
+#  TableStore — manages multiple named tables
+# ═══════════════════════════════════════════════════════════════
+
+class TableStore:
+    """Collection of named tables, serializable as one JSON blob.
+
+    Persisted per-commit alongside vector data and documents.
+    """
+
+    def __init__(self):
+        self._tables: Dict[str, Table] = {}
+
+    def create(self, name: str, columns: Optional[Dict[str, str]] = None) -> Table:
+        """Create a new table. Returns it."""
+        if name in self._tables:
+            raise ValueError(f"Table '{name}' already exists")
+        t = Table(name, columns)
+        self._tables[name] = t
+        return t
+
+    def get(self, name: str) -> Table:
+        """Get table by name."""
+        if name not in self._tables:
+            raise ValueError(f"Table '{name}' does not exist")
+        return self._tables[name]
+
+    def get_or_create(self, name: str, columns: Optional[Dict[str, str]] = None) -> Table:
+        """Get existing table or create it."""
+        if name not in self._tables:
+            return self.create(name, columns)
+        return self._tables[name]
+
+    def drop(self, name: str):
+        """Drop a table."""
+        if name not in self._tables:
+            raise ValueError(f"Table '{name}' does not exist")
+        del self._tables[name]
+
+    def list_tables(self) -> List[str]:
+        return list(self._tables.keys())
+
+    @property
+    def size(self) -> int:
+        return sum(t.size for t in self._tables.values())
+
+    def snapshot(self) -> bytes:
+        """Serialize all tables to JSON bytes."""
+        data = {name: t.to_dict() for name, t in self._tables.items()}
+        return json.dumps(data, default=str).encode()
+
+    def restore(self, data: bytes):
+        """Restore all tables from JSON bytes."""
+        self._tables = {}
+        raw = json.loads(data.decode())
+        for name, tdata in raw.items():
+            self._tables[name] = Table.from_dict(tdata)
+
+    def __repr__(self):
+        names = ", ".join(self._tables.keys()) if self._tables else "empty"
+        return f"TableStore({names})"
 
 
 class DocumentStore:
