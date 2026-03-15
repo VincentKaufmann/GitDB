@@ -23,7 +23,10 @@ from gitdb.indexes import IndexManager
 from gitdb.schema import Schema, SchemaError
 from gitdb.snapshots import Snapshot
 from gitdb.watches import WatchManager
-from gitdb.backup import backup_full, backup_incremental, restore, verify, BackupManager
+from gitdb.backup import (
+    backup_full, backup_incremental, restore, verify, BackupManager,
+    BackupScheduler, BackupSchedule, BackupLog, create_schedule, parse_interval,
+)
 from gitdb.encryption import EncryptionManager
 from gitdb.working_tree import WorkingTree
 
@@ -2800,6 +2803,88 @@ class GitDB:
         """List all recorded backups."""
         mgr = BackupManager(self._gitdb_dir)
         return mgr.list_backups()
+
+    # ── Backup Scheduler ──────────────────────────────────────
+
+    @property
+    def backup_scheduler(self) -> "BackupScheduler":
+        """Lazy-init backup scheduler."""
+        if not hasattr(self, "_backup_scheduler"):
+            self._backup_scheduler = BackupScheduler(
+                self._gitdb_dir,
+                backup_fn=self.backup,
+                backup_incr_fn=self.backup_incremental,
+                verify_fn=self.backup_verify,
+            )
+        return self._backup_scheduler
+
+    def backup_schedule_add(
+        self,
+        name: str,
+        backup_type: str = "full",
+        output_dir: str = "/tmp",
+        interval: Optional[str] = None,
+        weekdays: Optional[List[str]] = None,
+        dates: Optional[List[str]] = None,
+        time_of_day: str = "02:00",
+        retention_count: Optional[int] = None,
+        retention_days: Optional[int] = None,
+        cloud_uri: Optional[str] = None,
+        verify_after: bool = True,
+    ) -> dict:
+        """Add a backup schedule.
+
+        Args:
+            name: Unique schedule name.
+            backup_type: "full" or "incremental".
+            output_dir: Directory for backup files.
+            interval: Interval string ("5m", "2h", "1d", "1w", "month").
+            weekdays: ["mon", "wed", "fri"], "weekday", "weekend".
+            dates: ["2026-03-20", "2026-04-01"].
+            time_of_day: "HH:MM" for calendar schedules.
+            retention_count: Max backups to keep.
+            retention_days: Max age in days.
+            cloud_uri: Auto-upload after backup (s3://, gs://, etc).
+            verify_after: Run integrity check after each backup.
+        """
+        sched = create_schedule(
+            name=name,
+            backup_type=backup_type,
+            output_dir=output_dir,
+            interval=interval,
+            weekdays=weekdays,
+            dates=dates,
+            time_of_day=time_of_day,
+            retention_count=retention_count,
+            retention_days=retention_days,
+            cloud_uri=cloud_uri,
+            verify_after=verify_after,
+        )
+        return self.backup_scheduler.add_schedule(sched)
+
+    def backup_schedule_remove(self, name: str) -> bool:
+        """Remove a backup schedule."""
+        return self.backup_scheduler.remove_schedule(name)
+
+    def backup_schedule_list(self) -> List[dict]:
+        """List all backup schedules."""
+        return self.backup_scheduler.list_schedules()
+
+    def backup_schedule_run(self, name: str) -> dict:
+        """Trigger immediate execution of a schedule."""
+        return self.backup_scheduler.run_now(name)
+
+    def backup_schedule_start(self):
+        """Start the background backup scheduler."""
+        self.backup_scheduler.start()
+
+    def backup_schedule_stop(self):
+        """Stop the background backup scheduler."""
+        self.backup_scheduler.stop()
+
+    def backup_log(self, limit: int = 100) -> List[dict]:
+        """Get backup execution log with fingerprints."""
+        return self.backup_scheduler.get_log(limit)
 
     def __repr__(self):
         head = self.refs.get_head_commit()

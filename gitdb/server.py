@@ -354,11 +354,45 @@ footer span{display:flex;align-items:center;gap:4px}
             <div class="git-result" id="cloud-upload-result"></div>
           </div>
           <div class="card" style="grid-column:span 2">
-            <h3 style="margin-bottom:10px;color:var(--cyan)">Backup History</h3>
-            <button class="btn btn-blue" onclick="loadBackups()" style="margin-bottom:8px">Refresh</button>
+            <h3 style="margin-bottom:10px;color:var(--yellow)">Scheduled Backups</h3>
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+              <span id="scheduler-status" style="font-size:11px;color:var(--dim)">Scheduler: stopped</span>
+              <button class="btn btn-green" onclick="startScheduler()" style="font-size:11px;padding:3px 10px">Start</button>
+              <button class="btn btn-red" onclick="stopScheduler()" style="font-size:11px;padding:3px 10px">Stop</button>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:10px;margin-bottom:10px">
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
+                <div><label style="color:var(--dim);font-size:10px">Schedule name</label><input id="sched-name" placeholder="daily-full" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"></div>
+                <div><label style="color:var(--dim);font-size:10px">Type</label><select id="sched-type" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"><option value="full">Full</option><option value="incremental">Incremental</option></select></div>
+                <div><label style="color:var(--dim);font-size:10px">Output dir</label><input id="sched-dir" value="/tmp" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"></div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
+                <div><label style="color:var(--dim);font-size:10px">Interval (5m, 2h, 1d, 1w)</label><input id="sched-interval" placeholder="1d" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"></div>
+                <div><label style="color:var(--dim);font-size:10px">Weekdays (mon,wed,fri)</label><input id="sched-weekdays" placeholder="mon,wed,fri" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"></div>
+                <div><label style="color:var(--dim);font-size:10px">Time (HH:MM)</label><input id="sched-time" value="02:00" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"></div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
+                <div><label style="color:var(--dim);font-size:10px">Specific dates</label><input id="sched-dates" placeholder="2026-03-20,2026-04-01" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"></div>
+                <div><label style="color:var(--dim);font-size:10px">Retain (count)</label><input id="sched-retain-count" type="number" placeholder="10" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"></div>
+                <div><label style="color:var(--dim);font-size:10px">Retain (days)</label><input id="sched-retain-days" type="number" placeholder="30" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"></div>
+              </div>
+              <div style="display:grid;grid-template-columns:2fr 1fr;gap:6px;margin-bottom:8px">
+                <div><label style="color:var(--dim);font-size:10px">Cloud URI (auto-upload)</label><input id="sched-cloud" placeholder="s3://bucket/backups/" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px"></div>
+                <div style="display:flex;align-items:end;gap:6px"><label style="color:var(--dim);font-size:10px"><input type="checkbox" id="sched-verify" checked> Verify after</label></div>
+              </div>
+              <button class="btn btn-green" onclick="addSchedule()">Add Schedule</button>
+              <div class="git-result" id="sched-add-result"></div>
+            </div>
+            <div id="schedule-list-container"></div>
+          </div>
+          <div class="card" style="grid-column:span 2">
+            <h3 style="margin-bottom:10px;color:var(--cyan)">Backup History &amp; Log</h3>
+            <button class="btn btn-blue" onclick="loadBackups();loadBackupLog()" style="margin-bottom:8px">Refresh</button>
             <button class="btn btn-green" onclick="verifyBackup()" style="margin-bottom:8px;margin-left:8px">Verify Integrity</button>
             <div id="backup-list-container"></div>
             <div class="git-result" id="backup-verify-result"></div>
+            <h4 style="margin-top:12px;color:var(--dim);font-size:11px">Execution Log</h4>
+            <div id="backup-log-container" style="max-height:200px;overflow-y:auto"></div>
           </div>
         </div>
       </div>
@@ -732,7 +766,7 @@ for (const btn of $$('.tabs button')) {
     btn.classList.add('active');
     $('#tab-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'git') { populateBranchSelects(); populateTagSelect(); }
-    if (btn.dataset.tab === 'backup') loadBackups();
+    if (btn.dataset.tab === 'backup') { loadBackups(); loadSchedules(); loadBackupLog(); }
   };
 }
 
@@ -990,6 +1024,127 @@ async function uploadToCloud() {
   }
 }
 
+// ── Backup scheduler ──
+async function loadSchedules() {
+  const resp = await api('/api/backup/schedules');
+  const el = document.getElementById('schedule-list-container');
+  if (!resp || !resp.ok || !resp.data.schedules || !resp.data.schedules.length) {
+    el.innerHTML = '<div style="color:var(--dim);font-size:11px">No schedules configured</div>';
+    return;
+  }
+  let html = '<table class="backup-list-table"><tr><th>Name</th><th>Type</th><th>Schedule</th><th>Last Run</th><th>Status</th><th>Next</th><th></th></tr>';
+  for (const s of resp.data.schedules) {
+    let sched = '';
+    if (s.interval_seconds) {
+      const h = s.interval_seconds / 3600;
+      sched = h >= 24 ? (h/24) + 'd' : h >= 1 ? h + 'h' : (s.interval_seconds/60) + 'm';
+    } else if (s.weekdays) sched = s.weekdays.join(',') + ' ' + (s.time_of_day||'');
+    else if (s.dates) sched = s.dates.slice(0,2).join(', ') + (s.dates.length > 2 ? '...' : '');
+    const last = s.last_run ? new Date(s.last_run*1000).toISOString().slice(0,16).replace('T',' ') : '—';
+    const next = s.next_run ? new Date(s.next_run*1000).toISOString().slice(0,16).replace('T',' ') : '—';
+    const statusColor = s.last_status === 'success' ? 'var(--green)' : s.last_status === 'error' ? 'var(--red)' : 'var(--dim)';
+    html += '<tr><td>' + esc(s.name) + '</td><td>' + s.backup_type + '</td><td>' + sched + '</td>';
+    html += '<td style="font-size:10px">' + last + '</td>';
+    html += '<td style="color:' + statusColor + '">' + (s.last_status || '—') + ' <span style="font-size:9px">#' + s.run_count + '</span></td>';
+    html += '<td style="font-size:10px">' + next + '</td>';
+    html += '<td>';
+    html += '<button onclick="runScheduleNow(\'' + esc(s.name) + '\')" style="background:var(--blue);color:#000;border:none;padding:2px 6px;border-radius:3px;cursor:pointer;font-size:10px;margin-right:3px">Run</button>';
+    html += '<button onclick="toggleSchedule(\'' + esc(s.name) + '\',' + !s.enabled + ')" style="background:' + (s.enabled?'var(--yellow)':'var(--green)') + ';color:#000;border:none;padding:2px 6px;border-radius:3px;cursor:pointer;font-size:10px;margin-right:3px">' + (s.enabled?'Pause':'Enable') + '</button>';
+    html += '<button onclick="removeSchedule(\'' + esc(s.name) + '\')" style="background:var(--red);color:#000;border:none;padding:2px 6px;border-radius:3px;cursor:pointer;font-size:10px">Del</button>';
+    html += '</td></tr>';
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+async function addSchedule() {
+  const name = $('#sched-name').value.trim();
+  if (!name) { showGitResult('sched-add-result','Name required',false); return; }
+  const body = {
+    name,
+    backup_type: $('#sched-type').value,
+    output_dir: $('#sched-dir').value.trim() || '/tmp',
+    time_of_day: $('#sched-time').value.trim() || '02:00',
+    verify_after: document.getElementById('sched-verify').checked,
+  };
+  const interval = $('#sched-interval').value.trim();
+  if (interval) body.interval = interval;
+  const weekdays = $('#sched-weekdays').value.trim();
+  if (weekdays) body.weekdays = weekdays.split(',').map(s=>s.trim());
+  const dates = $('#sched-dates').value.trim();
+  if (dates) body.dates = dates.split(',').map(s=>s.trim());
+  const rc = $('#sched-retain-count').value;
+  if (rc) body.retention_count = parseInt(rc);
+  const rd = $('#sched-retain-days').value;
+  if (rd) body.retention_days = parseInt(rd);
+  const cloud = $('#sched-cloud').value.trim();
+  if (cloud) body.cloud_uri = cloud;
+
+  const resp = await api('/api/backup/schedule/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if (resp && resp.ok) {
+    showGitResult('sched-add-result','Schedule "'+name+'" added',true);
+    $('#sched-name').value=''; $('#sched-interval').value=''; $('#sched-weekdays').value=''; $('#sched-dates').value='';
+    loadSchedules();
+  } else {
+    showGitResult('sched-add-result','Error: '+(resp?resp.error:'failed'),false);
+  }
+}
+
+async function removeSchedule(name) {
+  if (!confirm('Remove schedule "'+name+'"?')) return;
+  await api('/api/backup/schedule/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  loadSchedules();
+}
+
+async function toggleSchedule(name, enabled) {
+  await api('/api/backup/schedule/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name, enabled})});
+  loadSchedules();
+}
+
+async function runScheduleNow(name) {
+  showGitResult('sched-add-result','Running "'+name+'"...',true);
+  const resp = await api('/api/backup/schedule/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  if (resp && resp.ok) {
+    showGitResult('sched-add-result','Completed: '+(resp.data.status||'?')+' — '+(resp.data.duration_seconds||'?')+'s',resp.data.status==='success');
+    loadSchedules(); loadBackupLog();
+  } else {
+    showGitResult('sched-add-result','Error: '+(resp?resp.error:'failed'),false);
+  }
+}
+
+async function startScheduler() {
+  await api('/api/backup/schedule/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  document.getElementById('scheduler-status').innerHTML = 'Scheduler: <span style="color:var(--green)">running</span>';
+}
+async function stopScheduler() {
+  await api('/api/backup/schedule/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  document.getElementById('scheduler-status').innerHTML = 'Scheduler: <span style="color:var(--red)">stopped</span>';
+}
+
+async function loadBackupLog() {
+  const resp = await api('/api/backup/log');
+  const el = document.getElementById('backup-log-container');
+  if (!resp || !resp.ok || !resp.data.entries || !resp.data.entries.length) {
+    el.innerHTML = '<div style="color:var(--dim);font-size:11px">No backup log entries</div>';
+    return;
+  }
+  let html = '<table class="backup-list-table"><tr><th>Time</th><th>Schedule</th><th>Type</th><th>Status</th><th>Size</th><th>Duration</th><th>Checksum</th></tr>';
+  for (const e of resp.data.entries) {
+    const t = e.timestamp_human || (e.timestamp ? new Date(e.timestamp*1000).toISOString().slice(0,16).replace('T',' ') : '?');
+    const statusColor = e.status === 'success' ? 'var(--green)' : e.status === 'error' ? 'var(--red)' : 'var(--yellow)';
+    html += '<tr><td style="font-size:10px">' + t + '</td><td>' + esc(e.schedule||'manual') + '</td><td>' + (e.backup_type||'?') + '</td>';
+    html += '<td style="color:'+statusColor+'">' + (e.status||'?');
+    if (e.verified === true) html += ' ✓';
+    if (e.verified === false) html += ' ✗';
+    html += '</td>';
+    html += '<td>' + ((e.size_bytes||0)/1024).toFixed(1) + ' KB</td>';
+    html += '<td>' + (e.duration_seconds||'?') + 's</td>';
+    html += '<td style="font-size:9px;color:var(--dim)">' + (e.checksum ? e.checksum.slice(0,12)+'...' : '—') + '</td></tr>';
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+
 // ── Backup operations ──
 async function createBackup() {
   const path = $('#backup-path').value.trim();
@@ -1241,6 +1396,12 @@ class GitDBHandler(BaseHTTPRequestHandler):
             elif route == "/api/backup/list":
                 self._h_backup_list()
 
+            elif route == "/api/backup/schedules":
+                self._h_backup_schedule_list()
+
+            elif route == "/api/backup/log":
+                self._h_backup_log()
+
             else:
                 # Dynamic GET routes
                 m = _RE_ENC_DIFF.match(route)
@@ -1333,6 +1494,18 @@ class GitDBHandler(BaseHTTPRequestHandler):
                 self._h_backup_restore(body)
             elif route == "/api/backup/verify":
                 self._h_backup_verify(body)
+            elif route == "/api/backup/schedule/add":
+                self._h_backup_schedule_add(body)
+            elif route == "/api/backup/schedule/remove":
+                self._h_backup_schedule_remove(body)
+            elif route == "/api/backup/schedule/toggle":
+                self._h_backup_schedule_toggle(body)
+            elif route == "/api/backup/schedule/run":
+                self._h_backup_schedule_run(body)
+            elif route == "/api/backup/schedule/start":
+                self._h_backup_scheduler_start(body)
+            elif route == "/api/backup/schedule/stop":
+                self._h_backup_scheduler_stop(body)
 
             # --- Ingest ---
             elif route == "/api/ingest":
@@ -2108,6 +2281,83 @@ class GitDBHandler(BaseHTTPRequestHandler):
             self._json_ok({"backups": backups})
         except Exception as e:
             self._json_ok({"backups": []})
+
+    # ── Backup Scheduler ──
+
+    def _h_backup_schedule_list(self):
+        try:
+            self._json_ok({"schedules": self.db.backup_schedule_list()})
+        except Exception as e:
+            self._json_ok({"schedules": []})
+
+    def _h_backup_log(self):
+        try:
+            self._json_ok({"entries": self.db.backup_log(limit=100)})
+        except Exception as e:
+            self._json_ok({"entries": []})
+
+    def _h_backup_schedule_add(self, body):
+        name = body.get("name")
+        if not name:
+            self._json_err("name is required", 400)
+            return
+        try:
+            result = self.db.backup_schedule_add(
+                name=name,
+                backup_type=body.get("backup_type", "full"),
+                output_dir=body.get("output_dir", "/tmp"),
+                interval=body.get("interval"),
+                weekdays=body.get("weekdays"),
+                dates=body.get("dates"),
+                time_of_day=body.get("time_of_day", "02:00"),
+                retention_count=body.get("retention_count"),
+                retention_days=body.get("retention_days"),
+                cloud_uri=body.get("cloud_uri"),
+                verify_after=body.get("verify_after", True),
+            )
+            self._json_ok(result, 201)
+        except Exception as e:
+            self._json_err(str(e), 400)
+
+    def _h_backup_schedule_remove(self, body):
+        name = body.get("name")
+        if not name:
+            self._json_err("name is required", 400)
+            return
+        if self.db.backup_schedule_remove(name):
+            self._json_ok({"removed": name})
+        else:
+            self._json_err(f"Schedule '{name}' not found", 404)
+
+    def _h_backup_schedule_toggle(self, body):
+        name = body.get("name")
+        enabled = body.get("enabled", True)
+        if not name:
+            self._json_err("name is required", 400)
+            return
+        if self.db.backup_scheduler.enable_schedule(name, enabled):
+            self._json_ok({"name": name, "enabled": enabled})
+        else:
+            self._json_err(f"Schedule '{name}' not found", 404)
+
+    def _h_backup_schedule_run(self, body):
+        name = body.get("name")
+        if not name:
+            self._json_err("name is required", 400)
+            return
+        result = self.db.backup_schedule_run(name)
+        if result.get("status") == "error" and result.get("error"):
+            self._json_err(result["error"], 400)
+        else:
+            self._json_ok(result)
+
+    def _h_backup_scheduler_start(self, body):
+        self.db.backup_schedule_start()
+        self._json_ok({"running": True})
+
+    def _h_backup_scheduler_stop(self, body):
+        self.db.backup_schedule_stop()
+        self._json_ok({"running": False})
 
     # ── Encrypted Diff ──
 
