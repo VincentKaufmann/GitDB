@@ -16,6 +16,7 @@ from gitdb.types import (
     MergeResult, Results, StashEntry, VectorMeta,
 )
 from gitdb.ambient import EmiratiAC
+from gitdb.documents import DocumentStore
 from gitdb.hooks import HookManager
 from gitdb.indexes import IndexManager
 from gitdb.schema import Schema, SchemaError
@@ -99,6 +100,14 @@ class GitDB:
         if schema_path.exists():
             self._schema = Schema(json.loads(schema_path.read_text()))
 
+        # Document store (MongoDB/SQLite replacement — no vectors needed)
+        self.docs = DocumentStore()
+        self._staged_doc_inserts: int = 0
+        self._staged_doc_updates: int = 0
+        self._staged_doc_deletes: int = 0
+        self._docs_dir = self._gitdb_dir / "docs"
+        self._docs_dir.mkdir(exist_ok=True)
+
         # If existing repo, load HEAD state
         if not self._is_new:
             self._load_head()
@@ -112,6 +121,11 @@ class GitDB:
         tensor, metadata = self._reconstruct(head_hash)
         self.tree.load_state(tensor, metadata)
         self.indexes.rebuild(self.tree.metadata)
+
+        # Load documents for HEAD
+        doc_file = self._docs_dir / f"{head_hash}.jsonl"
+        if doc_file.exists():
+            self.docs.restore(doc_file.read_bytes())
 
     def _reconstruct(self, commit_hash: str):
         """Reconstruct tensor + metadata at a given commit by replaying deltas."""
@@ -224,6 +238,77 @@ class GitDB:
             old_emb = self.tree.embeddings[idx].cpu().clone()
             self._staged_modifications.append((idx, old_emb, embeddings[i].cpu().clone()))
         self.tree.update_embeddings(ids, embeddings)
+
+    # ─── Document Operations (MongoDB/SQLite replacement) ────
+    # Use db.docs for direct access, or these convenience methods.
+    # These work independently of vectors — pure document storage.
+
+    def insert(self, doc: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Union[str, List[str]]:
+        """Insert document(s). Returns _id or list of _ids.
+
+        Usage:
+            db.insert({"name": "Alice", "age": 30})
+            db.insert([{"name": "Bob"}, {"name": "Charlie"}])
+        """
+        if isinstance(doc, list):
+            ids = self.docs.insert_many(doc)
+            self._staged_doc_inserts += len(doc)
+            return ids
+        _id = self.docs.insert(doc)
+        self._staged_doc_inserts += 1
+        return _id
+
+    def find(
+        self,
+        where: Optional[Dict[str, Any]] = None,
+        limit: Optional[int] = None,
+        skip: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Find documents matching a query (MongoDB-style).
+
+        Usage:
+            db.find(where={"age": {"$gt": 25}})
+            db.find(where={"role": "engineer"}, limit=10)
+        """
+        return self.docs.find(where=where, limit=limit, skip=skip)
+
+    def find_one(self, where: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Find a single matching document."""
+        return self.docs.find_one(where=where)
+
+    def update_docs(self, where: Dict[str, Any], set_fields: Dict[str, Any]) -> int:
+        """Update documents matching query. Returns count updated.
+
+        Usage:
+            db.update_docs({"name": "Alice"}, {"age": 31})
+        """
+        count = self.docs.update(where, set_fields)
+        self._staged_doc_updates += count
+        return count
+
+    def delete_docs(self, where: Dict[str, Any]) -> int:
+        """Delete documents matching query. Returns count deleted."""
+        count = self.docs.delete(where)
+        self._staged_doc_deletes += count
+        return count
+
+    def count_docs(self, where: Optional[Dict[str, Any]] = None) -> int:
+        """Count documents matching query."""
+        return self.docs.count(where=where)
+
+    def distinct(self, field: str, where: Optional[Dict[str, Any]] = None) -> List[Any]:
+        """Get distinct values for a field across documents."""
+        return self.docs.distinct(field, where=where)
+
+    def aggregate_docs(
+        self,
+        group_by: str,
+        agg_field: Optional[str] = None,
+        agg_fn: str = "count",
+        where: Optional[Dict[str, Any]] = None,
+    ) -> Dict[Any, Any]:
+        """Group documents and aggregate (count, sum, avg, min, max)."""
+        return self.docs.aggregate(group_by, agg_field, agg_fn, where=where)
 
     # ─── Query ────────────────────────────────────────────────
 
@@ -599,6 +684,12 @@ class GitDB:
         meta_raw = [{"id": m.id, "document": m.document, "metadata": m.metadata} for m in self.tree.metadata]
         meta_cache.write_text(json.dumps(meta_raw))
 
+        # Save document store state
+        self.docs.compact()
+        doc_snapshot = self.docs.snapshot()
+        if doc_snapshot.strip():
+            (self._docs_dir / f"{commit_hash}.jsonl").write_bytes(doc_snapshot)
+
         # Reflog
         self._reflog_append(f"commit: {message}", commit_hash)
 
@@ -746,9 +837,16 @@ class GitDB:
         if commit_hash is None:
             # Empty repo, just clear
             self.tree = WorkingTree(dim=self.dim, device=self.device)
+            self.docs = DocumentStore()
         else:
             tensor, metadata = self._reconstruct(commit_hash)
             self.tree.load_state(tensor, metadata)
+            # Restore documents
+            doc_file = self._docs_dir / f"{commit_hash}.jsonl"
+            if doc_file.exists():
+                self.docs.restore(doc_file.read_bytes())
+            else:
+                self.docs = DocumentStore()
             self._reflog_append(f"reset: {ref}", commit_hash)
         self._clear_staging()
 
@@ -769,6 +867,10 @@ class GitDB:
             "staged_modifications": len(self._staged_modifications),
             "total_rows": self.tree.total_rows,
             "active_rows": self.tree.size,
+            "documents": self.docs.size,
+            "staged_doc_inserts": self._staged_doc_inserts,
+            "staged_doc_updates": self._staged_doc_updates,
+            "staged_doc_deletes": self._staged_doc_deletes,
         }
 
     # ─── Properties ─────────────────────────────────────────
@@ -1211,6 +1313,28 @@ class GitDB:
                 for i, idx in enumerate(delta.mod_indices)
             ]
 
+        # Cherry-pick document changes too
+        doc_file = self._docs_dir / f"{commit_hash}.jsonl"
+        if doc_file.exists():
+            picked_docs = []
+            for line in doc_file.read_bytes().decode().strip().split("\n"):
+                if line.strip():
+                    picked_docs.append(json.loads(line))
+            # Get parent's documents to compute what this commit added
+            parent_docs = []
+            if commit.parent:
+                parent_doc_file = self._docs_dir / f"{commit.parent}.jsonl"
+                if parent_doc_file.exists():
+                    for line in parent_doc_file.read_bytes().decode().strip().split("\n"):
+                        if line.strip():
+                            parent_docs.append(json.loads(line))
+            parent_ids = {d.get("_id") for d in parent_docs}
+            new_docs = [d for d in picked_docs if d.get("_id") not in parent_ids]
+            if new_docs:
+                for d in new_docs:
+                    self.docs.insert(d)
+                self._staged_doc_inserts += len(new_docs)
+
         msg = f"cherry-pick: {commit.message} (from {commit.short_hash})"
         return self.commit(msg)
 
@@ -1284,6 +1408,12 @@ class GitDB:
             raise ValueError(f"Branch not found: {branch_name}")
         tensor, metadata = self._reconstruct(commit_hash)
         self.tree.load_state(tensor, metadata)
+        # Load documents for this branch
+        doc_file = self._docs_dir / f"{commit_hash}.jsonl"
+        if doc_file.exists():
+            self.docs.restore(doc_file.read_bytes())
+        else:
+            self.docs = DocumentStore()
         self.refs.set_head(branch_name)
         self._clear_staging()
 
@@ -1320,6 +1450,10 @@ class GitDB:
         if strategy == "union" and self._is_ancestor(ours_hash, theirs_hash):
             tensor, metadata = self._reconstruct(theirs_hash)
             self.tree.load_state(tensor, metadata)
+            # Load documents from target
+            doc_file = self._docs_dir / f"{theirs_hash}.jsonl"
+            if doc_file.exists():
+                self.docs.restore(doc_file.read_bytes())
             self.refs.set_branch(current_branch, theirs_hash)
             self._reflog_append(f"merge (fast-forward): {branch}", theirs_hash)
             result = MergeResult(commit_hash=theirs_hash, conflicts=[], strategy="fast-forward")
@@ -1357,10 +1491,28 @@ class GitDB:
                     (0, self.tree.embeddings[0].cpu(), self.tree.embeddings[0].cpu())
                 )
 
+        # Merge documents from other branch
+        theirs_doc_file = self._docs_dir / f"{theirs_hash}.jsonl"
+        if theirs_doc_file.exists():
+            theirs_docs = []
+            for line in theirs_doc_file.read_bytes().decode().strip().split("\n"):
+                if line.strip():
+                    theirs_docs.append(json.loads(line))
+            # Union merge: add docs from theirs that we don't have
+            our_ids = {d.get("_id") for d in self.docs.get_docs()}
+            new_docs = [d for d in theirs_docs if d.get("_id") not in our_ids]
+            if new_docs:
+                for d in new_docs:
+                    self.docs.insert(d)
+                self._staged_doc_inserts += len(new_docs)
+
         if not self._has_staged_changes():
             # Nothing new — fast-forward
             self.refs.set_branch(current_branch, theirs_hash)
             self._clear_staging()
+            # Also load their docs on fast-forward
+            if theirs_doc_file.exists():
+                self.docs.restore(theirs_doc_file.read_bytes())
             result = MergeResult(commit_hash=theirs_hash, conflicts=[], strategy="fast-forward")
             self.hooks.fire("post-merge", result=result, branch=branch, db=self)
             return result
@@ -1503,12 +1655,18 @@ class GitDB:
         meta_raw = [{"id": m.id, "document": m.document, "metadata": m.metadata} for m in self.tree.metadata]
         (stash_dir / meta_file).write_text(json.dumps(meta_raw))
 
+        # Save document store state
+        docs_file = f"stash_{idx}.docs.jsonl"
+        doc_snapshot = self.docs.snapshot()
+        (stash_dir / docs_file).write_bytes(doc_snapshot)
+
         stash_index.append({
             "index": idx,
             "message": message,
             "timestamp": time.time(),
             "tensor_file": tensor_file,
             "meta_file": meta_file,
+            "docs_file": docs_file,
         })
         index_file.write_text(json.dumps(stash_index, indent=2))
 
@@ -1543,6 +1701,11 @@ class GitDB:
         self.tree.load_state(tensor, metadata)
         self._clear_staging()
 
+        # Restore documents if stashed
+        docs_file = entry_data.get("docs_file")
+        if docs_file and (stash_dir / docs_file).exists():
+            self.docs.restore((stash_dir / docs_file).read_bytes())
+
         # Figure out what's staged vs HEAD
         head_hash = self.refs.get_head_commit()
         if head_hash:
@@ -1564,6 +1727,8 @@ class GitDB:
         # Clean up files
         (stash_dir / entry_data["tensor_file"]).unlink(missing_ok=True)
         (stash_dir / entry_data["meta_file"]).unlink(missing_ok=True)
+        if docs_file:
+            (stash_dir / docs_file).unlink(missing_ok=True)
         stash_index.pop(index)
         index_file.write_text(json.dumps(stash_index, indent=2))
 
@@ -2106,6 +2271,9 @@ class GitDB:
             self._staged_additions
             or self._staged_deletions
             or self._staged_modifications
+            or self._staged_doc_inserts
+            or self._staged_doc_updates
+            or self._staged_doc_deletes
         )
 
     def _clear_staging(self):
@@ -2114,6 +2282,9 @@ class GitDB:
         self._staged_del_embeddings.clear()
         self._staged_del_metadata.clear()
         self._staged_modifications.clear()
+        self._staged_doc_inserts = 0
+        self._staged_doc_updates = 0
+        self._staged_doc_deletes = 0
 
     def _cache_state(self, commit_hash: str):
         """Cache current working tree state for a commit."""

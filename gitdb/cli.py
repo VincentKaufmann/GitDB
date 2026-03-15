@@ -67,18 +67,32 @@ def cmd_status(args):
         print(f"HEAD: {head[:12]}...")
     else:
         print("No commits yet")
-    print(f"\n  {s['active_rows']} active vectors ({s['total_rows']} total)")
+
+    # Vector info
+    if s['active_rows'] > 0:
+        print(f"\n  {s['active_rows']} vectors ({s['total_rows']} total)")
+    # Document info
+    if s.get('documents', 0) > 0:
+        print(f"  {s['documents']} documents")
+
     staged = s["staged_additions"] + s["staged_deletions"] + s["staged_modifications"]
-    if staged:
-        print(f"\nStaged changes:")
+    doc_staged = s.get("staged_doc_inserts", 0) + s.get("staged_doc_updates", 0) + s.get("staged_doc_deletes", 0)
+    if staged or doc_staged:
+        print(f"\nChanges to be committed:")
         if s["staged_additions"]:
-            print(f"  +{s['staged_additions']} additions")
+            print(f"  new:      {s['staged_additions']} vectors")
         if s["staged_deletions"]:
-            print(f"  -{s['staged_deletions']} deletions")
+            print(f"  deleted:  {s['staged_deletions']} vectors")
         if s["staged_modifications"]:
-            print(f"  ~{s['staged_modifications']} modifications")
+            print(f"  modified: {s['staged_modifications']} vectors")
+        if s.get("staged_doc_inserts"):
+            print(f"  new:      {s['staged_doc_inserts']} documents")
+        if s.get("staged_doc_updates"):
+            print(f"  modified: {s['staged_doc_updates']} documents")
+        if s.get("staged_doc_deletes"):
+            print(f"  deleted:  {s['staged_doc_deletes']} documents")
     else:
-        print("\nNothing staged")
+        print("\nnothing to commit, working tree clean")
 
 
 def cmd_add(args):
@@ -295,15 +309,17 @@ def cmd_merge(args):
 def cmd_cherry_pick(args):
     db = load_db(args)
     try:
-        # Show what we're picking
         source_info = db.show(args.ref)
         h = db.cherry_pick(args.ref)
-        print(f"\033[33mcherry-pick {args.ref[:12]} → {h[:8]}\033[0m")
-        print(f"  {source_info['message']}")
-        print(f"  +{source_info['stats']['added']} -{source_info['stats']['removed']} ~{source_info['stats']['modified']}")
-        # Show what changed
-        new_info = db.show(h)
-        print(f"  {new_info['tensor_rows']} rows total")
+        branch = db.refs.current_branch
+        print(f"\033[33m[{branch} {h[:8]}]\033[0m {source_info['message']}")
+        s = source_info['stats']
+        parts = []
+        if s['added']: parts.append(f"{s['added']} insertion(+)")
+        if s['removed']: parts.append(f"{s['removed']} deletion(-)")
+        if s['modified']: parts.append(f"{s['modified']} modification(~)")
+        if parts:
+            print(f" {', '.join(parts)}")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -312,12 +328,11 @@ def cmd_cherry_pick(args):
 def cmd_revert(args):
     db = load_db(args)
     try:
-        # Show what we're reverting
         source_info = db.show(args.ref)
         h = db.revert(args.ref)
-        print(f"\033[33mrevert {args.ref[:12]} → {h[:8]}\033[0m")
-        print(f"  Reverted: \"{source_info['message']}\"")
-        print(f"  Undid: +{source_info['stats']['added']} -{source_info['stats']['removed']} ~{source_info['stats']['modified']}")
+        branch = db.refs.current_branch
+        print(f"\033[33m[{branch} {h[:8]}]\033[0m Revert \"{source_info['message']}\"")
+        print(f"This reverts commit {args.ref}.")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -328,8 +343,9 @@ def cmd_stash(args):
     if args.action == "pop":
         try:
             entry = db.stash_pop()
-            print(f"Popped stash@{{{entry.index}}}: {entry.message}")
-            print(f"  Restored {db.tree.size} vectors")
+            branch = db.refs.current_branch
+            print(f"On branch {branch}")
+            print(f"Dropped stash@{{{entry.index}}} ({entry.message})")
         except (ValueError, IndexError) as e:
             print(f"fatal: {e}", file=sys.stderr)
             sys.exit(1)
@@ -338,19 +354,24 @@ def cmd_stash(args):
         if not entries:
             print("No stashes")
         for e in entries:
-            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.timestamp))
-            print(f"  stash@{{{e.index}}}: {e.message}  ({ts})")
+            print(f"stash@{{{e.index}}}: On {db.refs.current_branch}: {e.message}")
     else:
         try:
-            status = db.status()
-            db.stash(args.message or "WIP")
+            branch = db.refs.current_branch
+            head = db.refs.head
+            head_short = head[:7] if head else "0000000"
+            # Get last commit message for display
+            msg = args.message or "WIP"
+            try:
+                info = db.show("HEAD")
+                head_msg = info.get("message", "")
+            except Exception:
+                head_msg = ""
+            db.stash(msg)
             stashes = db.stash_list()
             idx = stashes[-1].index if stashes else 0
-            adds = status.get("staged_additions", 0)
-            dels = status.get("staged_deletions", 0)
-            mods = status.get("staged_modifications", 0)
-            print(f"Saved working directory on {status.get('branch', '?')}: stash@{{{idx}}}")
-            print(f"  {status.get('total_vectors', 0)} vectors, {adds} staged additions, {dels} deletions, {mods} modifications")
+            print(f"Saved working directory and index state On {branch}: {msg}")
+            print(f"HEAD is now at {head_short} {head_msg}")
         except ValueError as e:
             print(f"fatal: {e}", file=sys.stderr)
             sys.exit(1)
@@ -457,13 +478,13 @@ def cmd_rebase(args):
     db = load_db(args)
     try:
         new = db.rebase(args.onto)
-        print(f"Rebased {len(new)} commits onto {args.onto}")
         for h in new:
             try:
                 info = db.show(h)
-                print(f"  \033[33m{h[:8]}\033[0m {info['message']}  (+{info['stats']['added']} -{info['stats']['removed']} ~{info['stats']['modified']})")
+                print(f"Applying: {info['message']}")
             except Exception:
-                print(f"  \033[33m{h[:8]}\033[0m")
+                print(f"Applying: {h[:8]}")
+        print(f"Successfully rebased and updated refs/heads/{db.refs.current_branch}.")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -485,10 +506,9 @@ def cmd_filter_branch(args):
         sys.exit(1)
 
     h = db.filter_branch(transforms[args.transform], args.transform)
-    info = db.show(h)
-    print(f"Applied '{args.transform}' → {h[:8]}")
-    print(f"  {info['message']}")
-    print(f"  {info['tensor_rows']} vectors transformed")
+    branch = db.refs.current_branch
+    print(f"Rewrite {h[:12]} ({branch})")
+    print(f"Ref 'refs/heads/{branch}' was rewritten")
 
 
 def cmd_show(args):
@@ -515,8 +535,8 @@ def cmd_amend(args):
     try:
         h = db.amend(message=args.message)
         info = db.show(h)
-        print(f"\033[33m[{db.refs.current_branch} {h[:8]}]\033[0m {info['message']}")
-        print(f"  +{info['stats']['added']} -{info['stats']['removed']} ~{info['stats']['modified']} | {info['tensor_rows']} rows")
+        branch = db.refs.current_branch
+        print(f"\033[33m[{branch} {h[:8]}]\033[0m {info['message']}")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -527,9 +547,9 @@ def cmd_squash(args):
     try:
         h = db.squash(args.n, message=args.message)
         info = db.show(h)
-        print(f"\033[33m[{db.refs.current_branch} {h[:8]}]\033[0m Squashed {args.n} commits")
-        print(f"  {info['message']}")
-        print(f"  +{info['stats']['added']} -{info['stats']['removed']} ~{info['stats']['modified']} | {info['tensor_rows']} rows")
+        branch = db.refs.current_branch
+        print(f"\033[33m[{branch} {h[:8]}]\033[0m {info['message']}")
+        print(f" Squashed {args.n} commits into 1.")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -539,8 +559,8 @@ def cmd_fork(args):
     db = load_db(args)
     try:
         forked = db.fork(args.dest, branch=args.branch)
-        print(f"Forked to {Path(args.dest).resolve()}")
-        print(f"  {forked.tree.size} vectors, branch={forked.current_branch}")
+        print(f"Cloning into '{Path(args.dest).resolve()}'...")
+        print(f"done.")
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -724,13 +744,15 @@ def cmd_pr(args):
     elif args.action == "merge":
         try:
             result = db.pr_merge(args.pr_id, strategy=args.strategy or "union")
-            print(f"Merged PR #{args.pr_id} → {result.commit_hash[:8]} ({result.strategy})")
-            if result.added:
-                print(f"  \033[32m+{result.added} vectors added\033[0m")
-            if result.removed:
-                print(f"  \033[31m-{result.removed} vectors removed\033[0m")
+            branch = db.refs.current_branch
+            print(f"Merge made by the '{result.strategy}' strategy.")
+            parts = []
+            if result.added: parts.append(f"{result.added} insertion(+)")
+            if result.removed: parts.append(f"{result.removed} deletion(-)")
+            if parts:
+                print(f" {', '.join(parts)}")
             if result.has_conflicts:
-                print(f"  \033[31m{len(result.conflicts)} conflicts\033[0m")
+                print(f"CONFLICT: {len(result.conflicts)} conflicting entries")
         except ValueError as e:
             print(f"fatal: {e}", file=sys.stderr)
             sys.exit(1)
@@ -740,6 +762,78 @@ def cmd_pr(args):
     elif args.action == "comment":
         db.pr_comment(args.pr_id, author=args.author or "anonymous", message=args.message)
         print(f"Comment added to PR #{args.pr_id}")
+
+
+def cmd_insert(args):
+    """Insert a JSON document."""
+    db = load_db(args)
+    try:
+        doc = json.loads(args.document)
+    except json.JSONDecodeError as e:
+        print(f"fatal: invalid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+    _id = db.insert(doc)
+    print(f"Inserted 1 document ({_id})")
+
+
+def cmd_find(args):
+    """Find documents matching a query."""
+    db = load_db(args)
+    where = json.loads(args.where) if args.where else None
+    results = db.find(where=where, limit=args.limit, skip=args.skip or 0)
+    if not results:
+        print("No matching documents")
+        return
+    for doc in results:
+        print(json.dumps(doc, default=str))
+
+
+def cmd_doc_find(args):
+    """Find documents matching a query (MongoDB-style)."""
+    db = load_db(args)
+    where = json.loads(args.where) if args.where else None
+    columns = args.columns.split(",") if args.columns else None
+    results = db.docs.select(
+        columns=columns,
+        where=where,
+        order_by=getattr(args, "order_by", None),
+        desc=getattr(args, "desc", False),
+        limit=args.limit,
+        offset=getattr(args, "offset", 0) or 0,
+    )
+    if not results:
+        print("No matching documents")
+        return
+
+    if columns and results:
+        # Table format
+        widths = {c: max(len(c), max(len(str(r.get(c, ""))) for r in results)) for c in columns}
+        header = "  ".join(c.ljust(widths[c]) for c in columns)
+        print(header)
+        print("  ".join("-" * widths[c] for c in columns))
+        for row in results:
+            print("  ".join(str(row.get(c, "")).ljust(widths[c]) for c in columns))
+    else:
+        for doc in results:
+            print(json.dumps(doc, default=str))
+    print(f"\n{len(results)} row(s)")
+
+
+def cmd_doc_update(args):
+    """Update documents matching a query."""
+    db = load_db(args)
+    where = json.loads(args.where)
+    set_fields = json.loads(args.set)
+    count = db.update_docs(where, set_fields)
+    print(f"Updated {count} document(s)")
+
+
+def cmd_doc_delete(args):
+    """Delete documents matching a query."""
+    db = load_db(args)
+    where = json.loads(args.where)
+    count = db.delete_docs(where)
+    print(f"Deleted {count} document(s)")
 
 
 def cmd_embed(args):
@@ -1504,6 +1598,33 @@ def main():
     p.add_argument("--no-embed", action="store_true", help="Skip embedding (store raw text)")
     p.add_argument("--no-commit", action="store_true", help="Don't auto-commit after ingest")
 
+    # insert (document)
+    p = sub.add_parser("insert", help="Insert a JSON document")
+    p.add_argument("document", help="JSON document string")
+
+    # find (document)
+    p = sub.add_parser("find", help="Find documents (MongoDB-style)")
+    p.add_argument("--where", help="Query filter JSON")
+    p.add_argument("--columns", help="Comma-separated fields to return")
+    p.add_argument("--order-by", help="Sort by field")
+    p.add_argument("--desc", action="store_true", help="Sort descending")
+    p.add_argument("--limit", type=int, help="Max documents")
+    p.add_argument("--offset", type=int, default=0, help="Skip documents")
+    p.add_argument("--skip", type=int, default=0, help="Skip documents (alias)")
+
+    # update (document)
+    p = sub.add_parser("update", help="Update documents matching query")
+    p.add_argument("--where", required=True, help="Query filter JSON")
+    p.add_argument("--set", required=True, help="Fields to update (JSON)")
+
+    # delete (document — careful: different from branch-delete)
+    p = sub.add_parser("delete", help="Delete documents matching query")
+    p.add_argument("--where", required=True, help="Query filter JSON")
+
+    # count (document)
+    p = sub.add_parser("count", help="Count documents")
+    p.add_argument("--where", help="Query filter JSON")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -1565,6 +1686,11 @@ def main():
         "schema": cmd_schema,
         "ingest": cmd_ingest,
         "serve": lambda args: __import__('gitdb.server', fromlist=['cmd_serve']).cmd_serve(args),
+        "insert": cmd_insert,
+        "find": cmd_doc_find,
+        "update": cmd_doc_update,
+        "delete": cmd_doc_delete,
+        "count": lambda args: print(f"{load_db(args).count_docs(where=json.loads(args.where) if args.where else None)} document(s)"),
     }
 
     fn = dispatch.get(args.command)

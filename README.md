@@ -1,19 +1,20 @@
 # GitDB
 
-GPU-accelerated version-controlled vector database. No server. No Docker. No config. `pip install gitdb-vectors` and go.
+GPU-accelerated version-controlled database — vectors, documents, and tables. Three databases in one, all git-versioned. No server. No Docker. No config. `pip install gitdb-vectors` and go.
 
 ## Why GitDB
 
-1. **Version control is native** — `git log`, `git diff`, `git branch`, `git merge` for your vectors. Nobody else has this.
-2. **Time-travel queries** — `db.query_text("revenue", at="v1.0")` searches an old snapshot. Chroma can't do this.
-3. **CEPH CRUSH placement** — deterministic data routing without a coordinator. Scales horizontally by adding peers.
-4. **P2P distributed** — no central server. Peers sync over SSH like git remotes. Each node is a full replica.
-5. **FoundationDB features** — hooks, transactions, watches, secondary indexes, schema enforcement. Enterprise-grade.
-6. **Spreading activation** — background semantic priming makes frequent queries instant. Multi-hop association chains emerge naturally.
-7. **CLI-first** — `gitdb init && gitdb add --text "doc" && gitdb commit -m "init"`. Works from terminal like git.
-8. **Embedded** — no server, no Docker, no config. `pip install gitdb-vectors` and go.
+1. **Three databases in one** — Vector DB + Document DB (MongoDB replacement) + Table DB (SQLite replacement). All git-versioned. One library.
+2. **Version control is native** — `git log`, `git diff`, `git branch`, `git merge` for your data. Nobody else has this.
+3. **Time-travel queries** — `db.query_text("revenue", at="v1.0")` searches an old snapshot. Chroma can't do this.
+4. **CEPH CRUSH placement** — deterministic data routing without a coordinator. Scales horizontally by adding peers.
+5. **P2P distributed** — no central server. Peers sync over SSH like git remotes. Each node is a full replica.
+6. **FoundationDB features** — hooks, transactions, watches, secondary indexes, schema enforcement. Enterprise-grade.
+7. **Spreading activation** — background semantic priming makes frequent queries instant. Multi-hop association chains emerge naturally.
+8. **CLI-first** — `gitdb init && gitdb add --text "doc" && gitdb commit -m "init"`. Works from terminal like git.
+9. **Embedded** — no server, no Docker, no config. `pip install gitdb-vectors` and go.
 
-Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. CEPH CRUSH placement. P2P distributed. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, schema enforcement. Native backup/restore. Universal ingest (SQLite, MongoDB, CSV, Parquet, PDF, text, S3, GCS, Azure, MinIO, SFTP).
+Git for tensors. MongoDB-style document store. SQLite-style table queries. Arctic/NV-EmbedQA for semantics. CEPH CRUSH placement. P2P distributed. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, schema enforcement. Native backup/restore. Universal ingest (SQLite, MongoDB, CSV, Parquet, PDF, text, S3, GCS, Azure, MinIO, SFTP).
 
 ## Install
 
@@ -208,6 +209,82 @@ Full structured query engine on metadata. Works standalone or combined with vect
 | `$not` | `{"$not": {"status": "draft"}}` | Logical NOT |
 
 Dotted paths (`"nested.field.deep"`) and array indexing (`"tags[0]"`) are supported.
+
+## Document Store
+
+MongoDB-style document database with SQLite-style table queries. Documents go through the same git workflow as vectors: commit, branch, merge, stash, reset.
+
+### MongoDB-Style API
+
+```python
+# Insert documents
+db.docs.insert({"name": "Alice", "age": 30, "role": "engineer"})
+db.docs.insert([
+    {"name": "Bob", "age": 25, "role": "intern"},
+    {"name": "Carol", "age": 35, "role": "engineer", "team": "infra"},
+])
+
+# Find documents
+results = db.docs.find({"role": "engineer"})
+alice = db.docs.find_one({"name": "Alice"})
+
+# Update
+db.docs.update_docs({"name": "Alice"}, {"$set": {"age": 31}})
+
+# Delete
+db.docs.delete_docs({"role": "intern"})
+
+# Count
+db.docs.count_docs({"role": "engineer"})  # → 2
+
+# Distinct values
+db.docs.distinct("role")  # → ["engineer", "intern"]
+
+# Aggregation
+db.docs.aggregate_docs([
+    {"$match": {"role": "engineer"}},
+    {"$group": {"_id": "team", "avg_age": {"$avg": "age"}}},
+])
+```
+
+### SQLite-Style Queries
+
+```python
+# SELECT with WHERE, ORDER BY, LIMIT
+rows = db.docs.select(
+    columns=["name", "age"],
+    where={"age": {"$gt": 25}},
+    order_by="age",
+    limit=10,
+)
+```
+
+### Full Query Operators
+
+All operators work on documents just like on vector metadata:
+
+`$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$eq`, `$in`, `$nin`, `$contains`, `$regex`, `$exists`, `$and`, `$or`, `$not`, nested dot paths (`"address.city"`).
+
+### CLI
+
+```bash
+# Insert a document
+gitdb insert '{"name": "Alice", "age": 30}'
+
+# Find with query operators
+gitdb find --where '{"age": {"$gt": 25}}' --columns name,age
+
+# Update matching documents
+gitdb update --where '{"name": "Alice"}' --set '{"age": 31}'
+
+# Delete matching documents
+gitdb delete --where '{"role": "intern"}'
+
+# Count matching documents
+gitdb count --where '{"role": "engineer"}'
+```
+
+Documents are staged and committed like everything else in GitDB. Branch your documents, merge them, time-travel through them.
 
 ## Embedding Models
 
@@ -687,6 +764,11 @@ gitdb hook [list|clear]                       Event hooks
 gitdb watch [list|clear]                      Change watches
 gitdb index [create|drop|list|lookup]         Secondary indexes
 gitdb schema [show|set|clear|validate]        Schema enforcement
+gitdb insert <json>                           Insert document
+gitdb find [--where JSON] [--columns C]       Find documents
+gitdb update --where JSON --set JSON          Update documents
+gitdb delete --where JSON                     Delete documents
+gitdb count [--where JSON]                    Count documents
 gitdb ingest <file|dir> [--text-column C]     Universal ingest
 gitdb serve [--port N] [--no-browser]        Web dashboard
 ```
@@ -1561,10 +1643,10 @@ All-or-nothing. Snapshots state on enter, restores on exception.
 ## Architecture
 
 ```
-14,400 lines of Python across 23 modules. 459 tests.
+15,200 lines of Python across 24 modules. 514 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
-│                    GitDB v0.8.0                               │
+│                    GitDB v0.9.0                               │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  P2P Layer ──→ Distributed Cluster   ← P2P Network          │
@@ -1661,6 +1743,8 @@ Modules:
 | Capability | GitDB | Pinecone | Weaviate | Qdrant | ChromaDB | SQLite |
 |-----------|-------|----------|----------|--------|----------|--------|
 | Vector similarity search | Yes | Yes | Yes | Yes | Yes | No |
+| Document store (MongoDB-style) | Yes | No | No | No | No | No |
+| Table queries (SQLite-style) | Yes | No | No | No | No | Yes |
 | Structured metadata queries | Yes | Limited | Yes | Yes | Yes | Yes |
 | Version control (branch/merge) | Yes | No | No | No | No | No |
 | Time-travel queries | Yes | No | No | No | No | No |
