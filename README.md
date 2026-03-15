@@ -2,39 +2,55 @@
 
 GPU-accelerated version-controlled database — vectors, documents, and tables. Three databases in one, all git-versioned. AES-256 encrypted at rest. GPU-accelerated FHE. REST API + gRPC server. `pip install gitdb-vectors` and go.
 
-## FHE Benchmark — Encrypted Computation on GPU
+## v0.13.0 Benchmark — Full Encrypted Stack
 
-Query encrypted data without ever decrypting it. Run git operations on data you can't read. All on GPU via `torch.fft`.
+Every operation benchmarked. Query data, diff branches, merge commits — all encrypted, all GPU-accelerated.
 
 ```
-128-bit Security (RLWE, poly_degree=4096, log₂(q)=109)
-
-Tier 1: Searchable Encryption
-  Equality encrypt:     738,350 ops/sec
-  Range compare:      5,795,982 ops/sec
-
-Tier 2: Private Information Retrieval (1000 rows)
-  64d query+extract:   28,044 queries/sec
-  256d query+extract:  40,202 queries/sec
-  1024d query+extract: 24,444 queries/sec
-
-Tier 3: Full FHE — Addition AND Multiplication on ciphertext
-  Homomorphic add:       ~20,000 ops/sec   (0.05 ms)
-  Homomorphic multiply:     ~470 ops/sec   (2.1 ms)  ← NEW
-  Encrypt + decrypt:      ~1,100 ops/sec   (0.9 ms)
-  Relinearization:     automatic after every multiply
-
-Encrypted Git Operations (all on ciphertext — server never sees data):
-  encrypted_diff:       homomorphic subtraction, detect changes
-  encrypted_merge:      three-way merge on encrypted branches
-  encrypted_commit_hash: content-address encrypted objects
-  encrypted_branch_diff: per-vector diff between encrypted branches
-
-Encrypted Vector Store: 100 vectors, top-5 search
-  Encrypted search: 252 queries/sec (multiply + rotate-and-sum)
-
-Security Levels: 128-bit (n=4096) | 192-bit (n=8192) | 256-bit (n=16384)
-Device: MPS / CUDA / CPU — same code, any device
+┌─────────────────────────────────────────────────────────────────────────┐
+│  SEARCHABLE ENCRYPTION                                                  │
+│                                                                         │
+│  match_equality        0.1 μs    10,500,000 ops/sec                     │
+│  compare_range         0.2 μs     5,800,000 ops/sec                     │
+│  equality_encrypt      1.4 μs       738,350 ops/sec                     │
+│  row encrypt+decrypt  17.5 μs        57,000 ops/sec                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PRIVATE INFORMATION RETRIEVAL (1000 rows × 256d, MPS)                  │
+│                                                                         │
+│  create_query          0.10 ms                                          │
+│  server_respond        1.48 ms   (GPU matmul)                           │
+│  extract_result        0.08 ms                                          │
+│  full roundtrip        0.23 ms    4,300 queries/sec                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  FULL FHE — RLWE (128-bit security, poly=4096)                          │
+│                                                                         │
+│  keygen (one-time)   124    ms   (secret + public + relin + galois)     │
+│  encrypt               0.56 ms    1,793 ops/sec                         │
+│  decrypt               0.28 ms    3,598 ops/sec                         │
+│  homo_add              0.047 ms  21,178 ops/sec                         │
+│  homo_multiply         2.12 ms      472 ops/sec   ← real FHE           │
+│  rotate               16.8  ms       60 ops/sec   (galois + keyswitch) │
+│  relinearize          auto         (included in every multiply)         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SECURITY LEVEL SCALING                                                 │
+│                                                                         │
+│             keygen      encrypt    multiply    ring dim                  │
+│  128-bit    103 ms      0.56 ms    2.2 ms      n=4096                   │
+│  192-bit    226 ms      1.1  ms    4.3 ms      n=8192    (2× slower)    │
+│  256-bit    488 ms      2.3  ms   10.3 ms      n=16384   (5× slower)   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ENCRYPTED GIT OPERATIONS (128-bit, all on ciphertext)                  │
+│                                                                         │
+│  encrypted_diff        0.10 ms   (homo subtraction — detect changes)    │
+│  has_changed           0.38 ms   (diff + decrypt + check)               │
+│  merge_sum (4 vecs)    0.14 ms   (add 4 encrypted vectors)             │
+│  merge_product         2.10 ms   (homo multiply two branches)           │
+│  commit_hash           0.03 ms   (SHA-256 of ciphertext)                │
+│  branch_diff (5 vecs)  0.46 ms   (per-vector encrypted diff)           │
+│  three_way_merge (3v)  0.83 ms   (base + diff_ours + diff_theirs)      │
+│  aggregate_sum (4v)    0.14 ms   (encrypted reduction)                  │
+└─────────────────────────────────────────────────────────────────────────┘
+Device: Apple MPS (PIR) / CPU (FHE — float64). CUDA uses same code path.
 ```
 
 **Proof it's encrypted — math on ciphertext, zero plaintext exposure:**
@@ -45,10 +61,10 @@ Ciphertext[0]: [981479975760, 517473956077, 149613053536, 560074374741, ...]
 Ciphertext[1]: [917977492947, 214339482535, 161449611734, 877538886805, ...]
 Decrypted:     [42, 7, 13, 99, 0, 1, 2, 3]  ← perfect recovery
 
-Homomorphic addition (computed entirely on ciphertext):
+Homomorphic addition:
   enc([10, 20, 30]) + enc([5, 15, 25]) → decrypt → [15, 35, 55]
 
-Homomorphic multiplication (NEW — makes it REAL FHE):
+Homomorphic multiplication:
   enc([3, 2, 0, ...]) × enc([4, 1, 0, ...]) → decrypt → [12, 11, 2, ...]
   (3×4=12, 3×1+2×4=11, 2×1=2) — polynomial multiplication on ciphertext
 
@@ -56,10 +72,13 @@ Encrypted git diff:
   enc(v1) - enc(v1) → decrypt → [0, 0, 0, ...]  (no change detected)
   enc(v1) - enc(v2) → decrypt → [7, 0, 0, ...]   (dimension 0 changed by 7)
 
+Encrypted three-way merge:
+  base + (ours - base) + (theirs - base) → merged   (all on ciphertext)
+
 Server never saw plaintext. All operations on encrypted data.
 ```
 
-First vector database with GPU-accelerated FHE + encrypted git operations.
+First vector database with GPU-accelerated FHE, encrypted git operations, and formal security parameters.
 
 ---
 
