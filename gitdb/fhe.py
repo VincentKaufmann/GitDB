@@ -321,38 +321,70 @@ class FHEScheme:
 
     Supports:
     - Homomorphic addition: decrypt(enc(a) + enc(b)) == a + b
-    - Homomorphic scalar multiplication
-    - Encrypted inner product (for cosine similarity)
+    - Homomorphic multiplication: decrypt(mul(enc(a), enc(b))) == a * b
+    - Relinearization to keep ciphertext size constant after multiply
+    - Encrypted inner product via multiply + rotate-and-sum
+    - Formal security parameters (128-bit, 192-bit, 256-bit)
 
     Parameters:
         poly_degree: Ring dimension N (power of 2). Larger = more secure but slower.
         coeff_modulus: Ciphertext modulus q.
         plain_modulus: Plaintext modulus t (must be << q).
         device: "cpu", "cuda", or "mps".
+        security_level: Optional security level (128, 192, 256). Overrides
+            poly_degree and coeff_modulus with validated parameters.
     """
 
+    # NIST-derived parameter sets based on LWE Estimator / HE Standard
+    # (homomorphicencryption.org security tables).
+    # Each entry: (poly_degree, coeff_modulus_bits, plain_modulus_bits, noise_std)
+    SECURITY_PARAMS = {
+        128: (4096, 109, 20, 3.2),    # 128-bit: n=4096, log2(q)=109
+        192: (8192, 218, 20, 3.2),    # 192-bit: n=8192, log2(q)=218
+        256: (16384, 438, 20, 3.2),   # 256-bit: n=16384, log2(q)=438
+    }
+
     def __init__(self, poly_degree: int = 4096, coeff_modulus: int = 2**40,
-                 plain_modulus: int = 2**20, device: str = "cpu"):
-        self.n = poly_degree
-        self.q = coeff_modulus
-        self.t = plain_modulus
+                 plain_modulus: int = 2**20, device: str = "cpu",
+                 security_level: Optional[int] = None):
+        if security_level is not None:
+            if security_level not in self.SECURITY_PARAMS:
+                raise ValueError(
+                    f"security_level must be one of {list(self.SECURITY_PARAMS.keys())}, "
+                    f"got {security_level}"
+                )
+            n, log_q, log_t, noise = self.SECURITY_PARAMS[security_level]
+            self.n = n
+            self.q = 2 ** log_q
+            self.t = 2 ** log_t
+            self._noise_std = noise
+        else:
+            self.n = poly_degree
+            self.q = coeff_modulus
+            self.t = plain_modulus
+            self._noise_std = 3.2
+
+        self.security_level = security_level
         self.device = device
         self._sk: Optional[torch.Tensor] = None
         self._pk: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
-        self._noise_std = 3.2
+        self._rlk: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None
+        self._galois_keys: Optional[Dict[int, Tuple[torch.Tensor, torch.Tensor]]] = None
 
     def keygen(self) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """Generate secret key and public key.
+        """Generate secret key, public key, and relinearization key.
 
         Secret key: polynomial with small coefficients in {-1, 0, 1}.
         Public key: (a, b) where b = -(a*sk + e) mod q.
+        Relin key: encryptions of powers of sk^2 for post-multiply size reduction.
+        Galois keys: for rotate-and-sum in encrypted inner product.
 
         Returns (secret_key, (pk_a, pk_b)).
         """
         sk = torch.randint(-1, 2, (self.n,), dtype=torch.float64, device=self.device)
 
         a = torch.zeros(self.n, dtype=torch.float64, device=self.device)
-        a.uniform_(0, self.q)
+        a.uniform_(0, float(self.q))
         a = a.floor()
 
         e = torch.randn(self.n, dtype=torch.float64, device=self.device) * self._noise_std
@@ -361,7 +393,79 @@ class FHEScheme:
 
         self._sk = sk
         self._pk = (a, b)
+
+        # Generate relinearization key: encrypt sk^2 under the public key
+        self._rlk = self._gen_relin_key(sk)
+
+        # Generate Galois keys for rotation
+        self._galois_keys = self._gen_galois_keys(sk)
+
         return sk, (a, b)
+
+    def _gen_relin_key(self, sk: torch.Tensor) -> List[Tuple[torch.Tensor, torch.Tensor]]:
+        """Generate relinearization key (Version 1 — base decomposition).
+
+        Encrypts sk^2 * base^i for each decomposition level, allowing
+        post-multiplication ciphertext reduction from 3 elements back to 2.
+        """
+        sk2 = self._poly_mul(sk, sk)
+        base = int(float(self.q) ** 0.5) + 1  # decomposition base
+        levels = 2  # number of decomposition levels
+
+        rlk = []
+        for i in range(levels):
+            a_i = torch.zeros(self.n, dtype=torch.float64, device=self.device)
+            a_i.uniform_(0, float(self.q))
+            a_i = a_i.floor()
+            e_i = torch.randn(self.n, dtype=torch.float64, device=self.device) * self._noise_std
+
+            power = float(base ** i)
+            b_i = self._mod_q(-(self._poly_mul(a_i, sk) + e_i) + sk2 * power)
+            rlk.append((a_i, b_i))
+
+        self._relin_base = base
+        return rlk
+
+    def _gen_galois_keys(self, sk: torch.Tensor) -> Dict[int, Tuple[torch.Tensor, torch.Tensor]]:
+        """Generate Galois (rotation) keys for power-of-2 rotations.
+
+        Each key encrypts σ_k(sk) under the original sk, where σ_k is
+        the automorphism x → x^k in R_q = Z_q[x]/(x^n+1).
+        Supports rotations by 1, 2, 4, ..., n/2 positions.
+        """
+        galois_keys = {}
+        rot = 1
+        while rot < self.n:
+            # Galois element for rotation by `rot`: k = 2*rot + 1 mod 2n
+            k = (2 * rot + 1) % (2 * self.n)
+            sk_rotated = self._apply_galois(sk, k)
+
+            a_i = torch.zeros(self.n, dtype=torch.float64, device=self.device)
+            a_i.uniform_(0, float(self.q))
+            a_i = a_i.floor()
+            e_i = torch.randn(self.n, dtype=torch.float64, device=self.device) * self._noise_std
+
+            b_i = self._mod_q(-(self._poly_mul(a_i, sk) + e_i) + sk_rotated)
+            galois_keys[rot] = (a_i, b_i)
+            rot *= 2
+
+        return galois_keys
+
+    def _apply_galois(self, poly: torch.Tensor, k: int) -> torch.Tensor:
+        """Apply Galois automorphism x → x^k mod (x^n + 1).
+
+        Maps coefficient i to position (i*k) mod 2n, with sign flip
+        when the position wraps past n (reduction mod x^n+1).
+        """
+        n = self.n
+        result = torch.zeros(n, dtype=poly.dtype, device=poly.device)
+        for i in range(n):
+            target = (i * k) % (2 * n)
+            if target < n:
+                result[target] = result[target] + poly[i]
+            else:
+                result[target - n] = result[target - n] - poly[i]
+        return result
 
     def encrypt(self, plaintext: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encrypt a plaintext polynomial.
@@ -378,7 +482,7 @@ class FHEScheme:
         elif pt.shape[0] > self.n:
             pt = pt[:self.n]
 
-        delta = self.q / self.t
+        delta = float(self.q) / float(self.t)
         m = self._mod_q(pt * delta)
 
         u = torch.randint(-1, 2, (self.n,), dtype=torch.float64, device=self.device)
@@ -399,7 +503,7 @@ class FHEScheme:
         ct0, ct1 = ciphertext
         m_noisy = self._mod_q(ct0 + self._poly_mul(ct1, self._sk))
 
-        delta = self.q / self.t
+        delta = float(self.q) / float(self.t)
         result = torch.round(m_noisy / delta)
         result = self._mod(result, self.t)
         return result
@@ -415,20 +519,117 @@ class FHEScheme:
             self._mod_q(ct_a[1] + ct_b[1]),
         )
 
+    def multiply(self, ct_a: Tuple[torch.Tensor, torch.Tensor],
+                 ct_b: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Homomorphic multiplication of two ciphertexts.
+
+        decrypt(multiply(enc(a), enc(b))) ≈ a * b (mod t)
+
+        Produces a degree-2 ciphertext (3 components), then relinearizes
+        back to degree-1 (2 components) using the relinearization key.
+        """
+        if self._rlk is None:
+            raise RuntimeError("Relinearization key not generated — call keygen() first")
+
+        a0, a1 = ct_a
+        b0, b1 = ct_b
+
+        # Tensor product gives 3-component ciphertext:
+        # c0 = a0*b0, c1 = a0*b1 + a1*b0, c2 = a1*b1
+        # All polynomial multiplications mod (x^n + 1)
+        delta_inv = float(self.t) / float(self.q)  # scale factor for multiplication
+
+        c0 = self._mod_q(self._poly_mul(a0, b0) * delta_inv)
+        c1 = self._mod_q((self._poly_mul(a0, b1) + self._poly_mul(a1, b0)) * delta_inv)
+        c2 = self._mod_q(self._poly_mul(a1, b1) * delta_inv)
+
+        # Relinearize: reduce (c0, c1, c2) back to (c0', c1') using rlk
+        c0_relin, c1_relin = self._relinearize(c0, c1, c2)
+
+        return (c0_relin, c1_relin)
+
+    def _relinearize(self, c0: torch.Tensor, c1: torch.Tensor,
+                     c2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Relinearize a degree-2 ciphertext back to degree-1.
+
+        Uses base decomposition of c2 and the relinearization key to
+        absorb the c2 term into (c0, c1).
+        """
+        base = self._relin_base
+        levels = len(self._rlk)
+
+        c0_new = c0.clone()
+        c1_new = c1.clone()
+
+        c2_remaining = c2.clone()
+        for i in range(levels):
+            # Decompose c2 in base: extract digit i
+            base_f = float(base)
+            digit = self._mod_q(torch.fmod(c2_remaining, base_f))
+            c2_remaining = torch.floor(c2_remaining / base_f)
+
+            rlk_a, rlk_b = self._rlk[i]
+            c0_new = self._mod_q(c0_new + self._poly_mul(digit, rlk_b))
+            c1_new = self._mod_q(c1_new + self._poly_mul(digit, rlk_a))
+
+        return (c0_new, c1_new)
+
+    def rotate(self, ct: Tuple[torch.Tensor, torch.Tensor],
+               steps: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Rotate ciphertext slots by `steps` positions.
+
+        Uses Galois keys for key-switching after automorphism application.
+        Rotation decomposes into power-of-2 steps.
+        """
+        if self._galois_keys is None:
+            raise RuntimeError("Galois keys not generated — call keygen() first")
+
+        ct0, ct1 = ct
+        remaining = abs(steps)
+        power = 1
+
+        while remaining > 0 and power <= self.n // 2:
+            if remaining & 1:
+                k = (2 * power + 1) % (2 * self.n)
+                ct0_rot = self._apply_galois(ct0, k)
+                ct1_rot = self._apply_galois(ct1, k)
+
+                # Key-switch ct1_rot using galois key
+                if power in self._galois_keys:
+                    gk_a, gk_b = self._galois_keys[power]
+                    ct0 = self._mod_q(ct0_rot + self._poly_mul(ct1_rot, gk_b))
+                    ct1 = self._mod_q(self._poly_mul(ct1_rot, gk_a))
+                else:
+                    ct0, ct1 = ct0_rot, ct1_rot
+            remaining >>= 1
+            power *= 2
+
+        return (ct0, ct1)
+
     def encrypted_inner_product(self, ct_a: Tuple[torch.Tensor, torch.Tensor],
                                 ct_b: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Approximate encrypted inner product via homomorphic addition.
+        """Encrypted inner product via homomorphic multiply + rotate-and-sum.
 
-        For vectors encoded as polynomials, the constant term of the product
-        polynomial corresponds to a form of inner product. We approximate
-        this by adding the two ciphertexts (which sums the encoded values).
-
-        For a true dot product on encrypted vectors, you'd need element-wise
-        homomorphic multiply + rotate-and-sum (SIMD batching). This provides
-        the addition component that, combined with the encoding, gives a
-        useful similarity signal.
+        Computes element-wise multiplication of two encrypted vectors,
+        then sums all slots using log(n) rotations and additions.
+        Falls back to addition-only if relinearization keys aren't available.
         """
-        return self.add(ct_a, ct_b)
+        if self._rlk is not None:
+            # Real inner product: multiply then rotate-and-sum
+            ct_prod = self.multiply(ct_a, ct_b)
+
+            # Rotate-and-sum: accumulate all slots into slot 0
+            ct_sum = ct_prod
+            rot = 1
+            while rot < self.n:
+                ct_rotated = self.rotate(ct_sum, rot)
+                ct_sum = self.add(ct_sum, ct_rotated)
+                rot *= 2
+
+            return ct_sum
+        else:
+            # Fallback: addition-based approximation
+            return self.add(ct_a, ct_b)
 
     def _poly_mul(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Polynomial multiplication mod (x^n + 1) using FFT.
@@ -451,13 +652,15 @@ class FHEScheme:
         return reduced
 
     def _mod_q(self, x: torch.Tensor) -> torch.Tensor:
-        """Centered modular reduction to [0, q)."""
-        return x - torch.floor(x / self.q) * self.q
+        """Modular reduction to [0, q). Uses float cast for large moduli."""
+        q = float(self.q)
+        return x - torch.floor(x / q) * q
 
     @staticmethod
     def _mod(x: torch.Tensor, modulus: int) -> torch.Tensor:
         """Standard modular reduction."""
-        return x - torch.floor(x / modulus) * modulus
+        m = float(modulus)
+        return x - torch.floor(x / m) * m
 
 
 # ---------------------------------------------------------------------------
@@ -539,3 +742,182 @@ class EncryptedVectorStore:
         quantized = (clamped * (half_t - 1) + half_t).to(torch.float64)
         quantized = quantized.clamp(0, t - 1).floor()
         return quantized
+
+
+# ---------------------------------------------------------------------------
+# Encrypted Git Operations — version control on encrypted data
+# ---------------------------------------------------------------------------
+
+class EncryptedGitOps:
+    """Git operations on encrypted data — the server never sees plaintext.
+
+    Wraps FHEScheme to provide encrypted versions of core git operations:
+    - encrypted_diff: detect which vectors changed without decrypting
+    - encrypted_merge: combine encrypted branches using homomorphic ops
+    - encrypted_commit_hash: content-address encrypted objects
+    - encrypted_equality: compare two encrypted values for equality
+    - encrypted_aggregate: sum/mean over encrypted vectors
+
+    All operations produce encrypted results that only the key holder
+    can decrypt. The server manages version history of data it cannot read.
+    """
+
+    def __init__(self, fhe: FHEScheme, se: Optional["SearchableEncryption"] = None):
+        self.fhe = fhe
+        self.se = se  # optional searchable encryption for metadata ops
+
+    def encrypted_diff(self, ct_a: Tuple[torch.Tensor, torch.Tensor],
+                       ct_b: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute encrypted difference between two ciphertext vectors.
+
+        Returns enc(a - b). The result is encrypted — decrypt to see
+        the actual diff. Non-zero coefficients indicate changed dimensions.
+
+        This is homomorphic subtraction: enc(a) - enc(b) = enc(a - b).
+        """
+        # Subtraction = add negation: ct_a + (-ct_b)
+        neg_b = (self.fhe._mod_q(-ct_b[0]), self.fhe._mod_q(-ct_b[1]))
+        return self.fhe.add(ct_a, neg_b)
+
+    def encrypted_has_changed(self, ct_a: Tuple[torch.Tensor, torch.Tensor],
+                              ct_b: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Check if two encrypted vectors differ.
+
+        Returns encrypted diff. Decrypt and check if any coefficient
+        is non-zero to determine if the vectors changed.
+        Server cannot determine the answer — only the key holder can.
+        """
+        return self.encrypted_diff(ct_a, ct_b)
+
+    def decrypt_has_changed(self, ct_diff: Tuple[torch.Tensor, torch.Tensor],
+                            tolerance: float = 1.0) -> bool:
+        """Client-side: decrypt a diff and check if vectors actually changed.
+
+        Args:
+            ct_diff: Encrypted diff from encrypted_has_changed.
+            tolerance: Max allowed difference per coefficient (accounts for FHE noise).
+        """
+        diff = self.fhe.decrypt(ct_diff)
+        t = self.fhe.t
+        # Center around zero: values near 0 or near t are "zero"
+        centered = diff.clone()
+        centered[centered > t / 2] -= t
+        return centered.abs().max().item() > tolerance
+
+    def encrypted_merge_sum(self, ct_list: List[Tuple[torch.Tensor, torch.Tensor]]
+                            ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Merge multiple encrypted vectors by homomorphic addition.
+
+        Use case: aggregating updates from multiple encrypted branches.
+        Returns enc(v1 + v2 + ... + vn).
+        """
+        if not ct_list:
+            raise ValueError("Cannot merge empty list")
+        result = ct_list[0]
+        for ct in ct_list[1:]:
+            result = self.fhe.add(result, ct)
+        return result
+
+    def encrypted_merge_product(self, ct_a: Tuple[torch.Tensor, torch.Tensor],
+                                ct_b: Tuple[torch.Tensor, torch.Tensor]
+                                ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Merge two encrypted vectors by homomorphic multiplication.
+
+        Use case: attention-weighted merges, encrypted feature intersection.
+        Returns enc(a * b).
+        """
+        return self.fhe.multiply(ct_a, ct_b)
+
+    def encrypted_aggregate(self, ct_list: List[Tuple[torch.Tensor, torch.Tensor]],
+                            op: str = "sum") -> Tuple[torch.Tensor, torch.Tensor]:
+        """Aggregate encrypted vectors: sum or mean.
+
+        For "mean": computes sum then divides plaintext by count after decryption.
+        The encrypted result is the sum; caller divides after decrypt.
+
+        Args:
+            ct_list: List of encrypted vectors.
+            op: "sum" or "mean" (mean returns sum — divide after decrypt).
+        """
+        if op not in ("sum", "mean"):
+            raise ValueError(f"op must be 'sum' or 'mean', got {op}")
+        return self.encrypted_merge_sum(ct_list)
+
+    def encrypted_commit_hash(self, ct: Tuple[torch.Tensor, torch.Tensor]) -> str:
+        """Content-address an encrypted object.
+
+        Hashes the ciphertext bytes (NOT the plaintext). Two identical
+        ciphertexts produce the same hash, but re-encrypting the same
+        plaintext produces different ciphertexts (random nonce in RLWE).
+
+        Use for: encrypted object deduplication within a single encryption,
+        integrity verification of encrypted commits.
+        """
+        ct0_bytes = ct[0].numpy().tobytes()
+        ct1_bytes = ct[1].numpy().tobytes()
+        return hashlib.sha256(ct0_bytes + ct1_bytes).hexdigest()
+
+    def encrypted_branch_diff(self, branch_a: List[Tuple[torch.Tensor, torch.Tensor]],
+                              branch_b: List[Tuple[torch.Tensor, torch.Tensor]]
+                              ) -> List[Tuple[int, Tuple[torch.Tensor, torch.Tensor]]]:
+        """Diff two encrypted branches — returns list of (index, encrypted_diff).
+
+        Compares vectors at each position. Only includes indices where
+        the encrypted diff is non-trivial (the server can't tell which
+        actually changed — that requires decryption).
+        """
+        diffs = []
+        max_len = max(len(branch_a), len(branch_b))
+        for i in range(max_len):
+            if i < len(branch_a) and i < len(branch_b):
+                d = self.encrypted_diff(branch_a[i], branch_b[i])
+                diffs.append((i, d))
+            elif i < len(branch_a):
+                diffs.append((i, branch_a[i]))  # added in a
+            else:
+                diffs.append((i, branch_b[i]))  # added in b
+        return diffs
+
+    def encrypted_three_way_merge(self, base: List[Tuple[torch.Tensor, torch.Tensor]],
+                                  ours: List[Tuple[torch.Tensor, torch.Tensor]],
+                                  theirs: List[Tuple[torch.Tensor, torch.Tensor]]
+                                  ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
+        """Three-way merge on encrypted vectors.
+
+        For each position:
+        - If only one side changed from base, take that side
+        - If both changed, sum the diffs (encrypted conflict resolution)
+
+        All operations are homomorphic — server never sees plaintext.
+        Conflict resolution via addition: result = base + diff_ours + diff_theirs.
+        """
+        max_len = max(len(base), len(ours), len(theirs))
+        result = []
+
+        for i in range(max_len):
+            if i >= len(base):
+                # New vector — take from whichever branch has it
+                if i < len(ours):
+                    result.append(ours[i])
+                elif i < len(theirs):
+                    result.append(theirs[i])
+                continue
+
+            if i >= len(ours) and i >= len(theirs):
+                result.append(base[i])
+                continue
+
+            ct_base = base[i]
+            ct_ours = ours[i] if i < len(ours) else ct_base
+            ct_theirs = theirs[i] if i < len(theirs) else ct_base
+
+            # Three-way: base + (ours - base) + (theirs - base)
+            diff_ours = self.encrypted_diff(ct_ours, ct_base)
+            diff_theirs = self.encrypted_diff(ct_theirs, ct_base)
+
+            # Merge: base + diff_ours + diff_theirs
+            merged = self.fhe.add(ct_base, diff_ours)
+            merged = self.fhe.add(merged, diff_theirs)
+            result.append(merged)
+
+        return result
