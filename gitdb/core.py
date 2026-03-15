@@ -365,41 +365,30 @@ class GitDB:
     ) -> Dict[str, Any]:
         """Semantic diff — cluster added/removed vectors by meaning.
 
-        Returns dict with 'added_clusters' and 'removed_clusters',
-        each a list of {centroid_doc, count, sample_docs}.
+        Returns dict with added/removed/modified counts plus document clusters.
         """
         diff = self.diff(ref_a, ref_b)
 
-        def _cluster_docs(indices, metadata):
-            """Simple greedy clustering by document text similarity."""
-            if not indices:
+        def _cluster_entries(entries):
+            """Group diff entries by first word heuristic."""
+            if not entries:
                 return []
-            docs = []
-            for idx in indices:
-                if idx < len(metadata):
-                    docs.append(metadata[idx].document or f"vector_{idx}")
-                else:
-                    docs.append(f"vector_{idx}")
-            # If we have embedding support, cluster by embedding
-            # For now, group by first word / simple heuristic
             groups = {}
-            for doc in docs:
+            for e in entries:
+                doc = e.document or e.id[:8]
                 key = doc.split()[0] if doc.split() else "unknown"
                 groups.setdefault(key, []).append(doc)
             return [{"label": k, "count": len(v), "samples": v[:3]} for k, v in groups.items()]
 
-        # Reconstruct states to get metadata
-        hash_a = self._resolve(ref_a)
-        hash_b = self._resolve(ref_b)
-        _, meta_a = self._reconstruct(hash_a)
-        _, meta_b = self._reconstruct(hash_b)
+        added_entries = [e for e in diff.entries if e.change == "added"]
+        removed_entries = [e for e in diff.entries if e.change == "removed"]
 
         return {
-            "added": diff.added,
-            "removed": diff.removed,
-            "modified": diff.modified,
-            "added_summary": _cluster_docs(diff.added, meta_b),
-            "removed_summary": _cluster_docs(diff.removed, meta_a),
+            "added_count": diff.added_count,
+            "removed_count": diff.removed_count,
+            "modified_count": diff.modified_count,
+            "added_summary": _cluster_entries(added_entries),
+            "removed_summary": _cluster_entries(removed_entries),
         }
 
     def re_embed(
@@ -662,7 +651,13 @@ class GitDB:
         return commits
 
     def diff(self, ref_a: str, ref_b: str) -> DiffResult:
-        """Compare two refs (commits, branches, tags)."""
+        """Compare two refs (commits, branches, tags).
+
+        Returns a DiffResult with full content: documents, metadata,
+        and cosine similarity for modified vectors.
+        """
+        from gitdb.types import DiffEntry
+
         hash_a = self._resolve(ref_a)
         hash_b = self._resolve(ref_b)
         if hash_a is None:
@@ -678,15 +673,48 @@ class GitDB:
 
         added = ids_b - ids_a
         removed = ids_a - ids_b
-        # Modified: same ID but different embedding
         common = ids_a & ids_b
-        modified = set()
+
         id_to_idx_a = {m.id: i for i, m in enumerate(meta_a)}
         id_to_idx_b = {m.id: i for i, m in enumerate(meta_b)}
-        for vid in common:
+        meta_by_id_a = {m.id: m for m in meta_a}
+        meta_by_id_b = {m.id: m for m in meta_b}
+
+        modified = set()
+        entries = []
+
+        # Added vectors
+        for vid in sorted(added):
+            m = meta_by_id_b[vid]
+            entries.append(DiffEntry(
+                id=vid, change="added",
+                document=m.document, metadata=dict(m.metadata),
+            ))
+
+        # Removed vectors
+        for vid in sorted(removed):
+            m = meta_by_id_a[vid]
+            entries.append(DiffEntry(
+                id=vid, change="removed",
+                document=m.document, metadata=dict(m.metadata),
+            ))
+
+        # Modified vectors
+        for vid in sorted(common):
             ia, ib = id_to_idx_a[vid], id_to_idx_b[vid]
             if not torch.equal(tensor_a[ia], tensor_b[ib]):
                 modified.add(vid)
+                ma, mb = meta_by_id_a[vid], meta_by_id_b[vid]
+                # Cosine similarity between old and new embedding
+                sim = torch.nn.functional.cosine_similarity(
+                    tensor_a[ia].unsqueeze(0), tensor_b[ib].unsqueeze(0)
+                ).item()
+                entries.append(DiffEntry(
+                    id=vid, change="modified",
+                    document=mb.document, document_before=ma.document,
+                    metadata=dict(mb.metadata), metadata_before=dict(ma.metadata),
+                    similarity=sim,
+                ))
 
         return DiffResult(
             added_count=len(added),
@@ -695,6 +723,7 @@ class GitDB:
             added_ids=sorted(added),
             removed_ids=sorted(removed),
             modified_ids=sorted(modified),
+            entries=entries,
         )
 
     def checkout(self, ref: str):

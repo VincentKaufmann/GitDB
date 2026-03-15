@@ -4,13 +4,13 @@ from gitdb.core import GitDB, Transaction
 from gitdb.hooks import HookManager
 from gitdb.schema import Schema, SchemaError
 from gitdb.types import (
-    Results, CommitInfo, DiffResult, MergeResult,
+    Results, CommitInfo, DiffEntry, DiffResult, MergeResult,
     BlameEntry, BisectResult, StashEntry,
 )
 
 __version__ = "0.8.0"
 __all__ = [
     "GitDB", "Transaction", "HookManager", "Schema", "SchemaError",
-    "Results", "CommitInfo", "DiffResult",
+    "Results", "CommitInfo", "DiffEntry", "DiffResult",
     "MergeResult", "BlameEntry", "BisectResult", "StashEntry",
 ]

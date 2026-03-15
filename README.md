@@ -844,19 +844,45 @@ Supports count, sum, avg, min, max.
 
 ### diff — Compare two refs
 
-```python
-diff = db.diff("main", "experiment")
-# → DiffResult(added=2, removed=0, modified=1, similarity=0.87)
-```
+Real `git diff` output. Shows every added/removed/modified vector with document, metadata, and cosine similarity.
 
 ```bash
 gitdb diff main experiment
-# Added:   2 vectors
-# Removed: 0 vectors
-# Modified: 1 vector (similarity: 0.87)
+# diff --gitdb main/a3f1b2c4 experiment/a3f1b2c4
+# new vector a3f1b2c4...
+# --- /dev/null
+# +++ experiment/a3f1b2c4
+# @@ -0,0 +1 @@
+# +document: quarterly revenue report
+# +metadata: {"dept":"finance"}
+#
+# diff --gitdb main/c8d3e4f6 experiment/c8d3e4f6
+# modified vector c8d3e4f6... (cosine similarity: 0.7234)
+# --- main/c8d3e4f6
+# +++ experiment/c8d3e4f6
+# @@ -1,2 +1,2 @@
+# -document: old projections model
+# +document: updated projections
+# -metadata: {"version":1}
+# +metadata: {"version":2}
 ```
 
-Semantic diff. Modified similarity tells you how much a vector actually changed in embedding space. 0.99 = barely touched. 0.5 = completely rewritten.
+```python
+diff = db.diff("main", "experiment")
+# → Diff(+2 -0 ~1)
+
+# Git-style unified format
+print(diff.unified("main", "experiment"))
+
+# Programmatic access
+for entry in diff.entries:
+    print(entry.change, entry.id[:8], entry.document, entry.similarity)
+
+# Summary view
+print(diff.show())
+```
+
+Same format as `git diff`. Green for added, red for removed, yellow/cyan for modified. Cosine similarity on modified vectors tells you how much the embedding actually moved.
 
 ---
 

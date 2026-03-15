@@ -58,6 +58,23 @@ class CommitInfo:
 
 
 @dataclass
+class DiffEntry:
+    """A single changed vector in a diff."""
+    id: str
+    change: str                          # "added", "removed", "modified"
+    document: Optional[str] = None       # current document text
+    document_before: Optional[str] = None  # previous document text (modified only)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata_before: Dict[str, Any] = field(default_factory=dict)
+    similarity: Optional[float] = None   # cosine sim between old/new (modified only)
+
+    def __repr__(self):
+        sim = f" sim={self.similarity:.4f}" if self.similarity is not None else ""
+        doc = f" {self.document[:40]}..." if self.document and len(self.document) > 40 else f" {self.document}" if self.document else ""
+        return f"DiffEntry({self.change} {self.id[:8]}{sim}{doc})"
+
+
+@dataclass
 class DiffResult:
     """Result of comparing two refs."""
     added_count: int
@@ -66,9 +83,90 @@ class DiffResult:
     added_ids: List[str] = field(default_factory=list)
     removed_ids: List[str] = field(default_factory=list)
     modified_ids: List[str] = field(default_factory=list)
+    entries: List[DiffEntry] = field(default_factory=list)
 
     def __repr__(self):
         return f"Diff(+{self.added_count} -{self.removed_count} ~{self.modified_count})"
+
+    def show(self) -> str:
+        """Human-readable diff output."""
+        lines = []
+        for e in self.entries:
+            if e.change == "added":
+                doc = e.document or "(no document)"
+                lines.append(f"+ {e.id[:12]}  {doc}")
+                if e.metadata:
+                    lines.append(f"  metadata: {e.metadata}")
+            elif e.change == "removed":
+                doc = e.document or "(no document)"
+                lines.append(f"- {e.id[:12]}  {doc}")
+                if e.metadata:
+                    lines.append(f"  metadata: {e.metadata}")
+            elif e.change == "modified":
+                sim = f"  (similarity: {e.similarity:.4f})" if e.similarity is not None else ""
+                lines.append(f"~ {e.id[:12]}{sim}")
+                if e.document_before != e.document:
+                    if e.document_before:
+                        lines.append(f"  - {e.document_before}")
+                    if e.document:
+                        lines.append(f"  + {e.document}")
+                if e.metadata_before != e.metadata:
+                    lines.append(f"  - metadata: {e.metadata_before}")
+                    lines.append(f"  + metadata: {e.metadata}")
+        return "\n".join(lines)
+
+    def unified(self, ref_a: str = "a", ref_b: str = "b") -> str:
+        """Git-style unified diff format."""
+        import json as _json
+        lines = []
+        for e in self.entries:
+            lines.append(f"diff --gitdb {ref_a}/{e.id[:12]} {ref_b}/{e.id[:12]}")
+            if e.change == "added":
+                lines.append(f"new vector {e.id}")
+                lines.append(f"--- /dev/null")
+                lines.append(f"+++ {ref_b}/{e.id[:12]}")
+                lines.append(f"@@ -0,0 +1 @@")
+                lines.append(f"+document: {e.document or '(none)'}")
+                if e.metadata:
+                    lines.append(f"+metadata: {_json.dumps(e.metadata, separators=(',', ':'))}")
+            elif e.change == "removed":
+                lines.append(f"deleted vector {e.id}")
+                lines.append(f"--- {ref_a}/{e.id[:12]}")
+                lines.append(f"+++ /dev/null")
+                lines.append(f"@@ -1 +0,0 @@")
+                lines.append(f"-document: {e.document or '(none)'}")
+                if e.metadata:
+                    lines.append(f"-metadata: {_json.dumps(e.metadata, separators=(',', ':'))}")
+            elif e.change == "modified":
+                sim = f" (cosine similarity: {e.similarity:.4f})" if e.similarity is not None else ""
+                lines.append(f"modified vector {e.id}{sim}")
+                lines.append(f"--- {ref_a}/{e.id[:12]}")
+                lines.append(f"+++ {ref_b}/{e.id[:12]}")
+                # Document diff
+                doc_a = e.document_before or "(none)"
+                doc_b = e.document or "(none)"
+                meta_a = _json.dumps(e.metadata_before, separators=(',', ':')) if e.metadata_before else "{}"
+                meta_b = _json.dumps(e.metadata, separators=(',', ':')) if e.metadata else "{}"
+                hunk_lines = 0
+                changes = []
+                if doc_a != doc_b:
+                    changes.append(f"-document: {doc_a}")
+                    changes.append(f"+document: {doc_b}")
+                    hunk_lines += 1
+                else:
+                    changes.append(f" document: {doc_a}")
+                    hunk_lines += 1
+                if meta_a != meta_b:
+                    changes.append(f"-metadata: {meta_a}")
+                    changes.append(f"+metadata: {meta_b}")
+                    hunk_lines += 1
+                else:
+                    changes.append(f" metadata: {meta_a}")
+                    hunk_lines += 1
+                lines.append(f"@@ -1,{hunk_lines} +1,{hunk_lines} @@")
+                lines.extend(changes)
+            lines.append("")  # blank line between entries
+        return "\n".join(lines)
 
 
 @dataclass

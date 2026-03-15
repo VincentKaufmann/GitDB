@@ -194,15 +194,28 @@ def cmd_diff(args):
     db = load_db(args)
     try:
         d = db.diff(args.ref_a, args.ref_b)
-        print(f"Comparing {args.ref_a} → {args.ref_b}:")
-        if d.added_count:
-            print(f"  \033[32m+{d.added_count} added\033[0m")
-        if d.removed_count:
-            print(f"  \033[31m-{d.removed_count} removed\033[0m")
-        if d.modified_count:
-            print(f"  \033[33m~{d.modified_count} modified\033[0m")
         if not (d.added_count or d.removed_count or d.modified_count):
-            print("  No differences")
+            print("No differences")
+            return
+        # Print unified diff with colors
+        unified = d.unified(args.ref_a, args.ref_b)
+        for line in unified.splitlines():
+            if line.startswith("diff --gitdb"):
+                print(f"\033[1m{line}\033[0m")  # bold
+            elif line.startswith("---"):
+                print(f"\033[1;31m{line}\033[0m")
+            elif line.startswith("+++"):
+                print(f"\033[1;32m{line}\033[0m")
+            elif line.startswith("@@"):
+                print(f"\033[36m{line}\033[0m")  # cyan
+            elif line.startswith("-"):
+                print(f"\033[31m{line}\033[0m")  # red
+            elif line.startswith("+"):
+                print(f"\033[32m{line}\033[0m")  # green
+            elif line.startswith("new vector") or line.startswith("deleted vector") or line.startswith("modified vector"):
+                print(f"\033[33m{line}\033[0m")  # yellow
+            else:
+                print(line)
     except ValueError as e:
         print(f"fatal: {e}", file=sys.stderr)
         sys.exit(1)
