@@ -14,6 +14,7 @@ from gitdb.fhe import (
     FHEScheme,
     EncryptedVectorStore,
     EncryptedGitOps,
+    EncryptedDBOps,
 )
 
 
@@ -716,3 +717,179 @@ class TestEncryptedGitOps:
         ops = EncryptedGitOps(fhe)
         with pytest.raises(ValueError, match="op must be"):
             ops.encrypted_aggregate([], op="max")
+
+
+# ---------------------------------------------------------------------------
+# Tier 5: Encrypted Database Operations
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def db_ops(fhe, se_key):
+    """EncryptedDBOps with both FHE and SearchableEncryption."""
+    se = SearchableEncryption(se_key)
+    return EncryptedDBOps(fhe, se), se
+
+
+class TestEncryptedDBOps:
+    def test_where_eq(self, db_ops):
+        """Encrypted WHERE field = value."""
+        ops, se = db_ops
+        rows = [
+            se.encrypt_row({"name": "Alice", "dept": "eng"}, {"name": "equality", "dept": "equality"}),
+            se.encrypt_row({"name": "Bob", "dept": "sales"}, {"name": "equality", "dept": "equality"}),
+            se.encrypt_row({"name": "Alice", "dept": "sales"}, {"name": "equality", "dept": "equality"}),
+        ]
+        matches = ops.encrypted_where_eq(rows, "name", "Alice")
+        assert matches == [0, 2]
+
+    def test_where_range(self, db_ops):
+        """Encrypted WHERE field > value."""
+        ops, se = db_ops
+        rows = [
+            se.encrypt_row({"name": "a", "age": 25}, {"name": "equality", "age": "range"}),
+            se.encrypt_row({"name": "b", "age": 35}, {"name": "equality", "age": "range"}),
+            se.encrypt_row({"name": "c", "age": 45}, {"name": "equality", "age": "range"}),
+        ]
+        matches = ops.encrypted_where_range(rows, "age", "gt", 30)
+        assert 1 in matches
+        assert 2 in matches
+        assert 0 not in matches
+
+    def test_join(self, db_ops):
+        """Encrypted inner join on equality field."""
+        ops, se = db_ops
+        users = [
+            se.encrypt_row({"id": "u1", "name": "Alice"}, {"id": "equality", "name": "equality"}),
+            se.encrypt_row({"id": "u2", "name": "Bob"}, {"id": "equality", "name": "equality"}),
+        ]
+        orders = [
+            se.encrypt_row({"id": "u1", "item": "laptop"}, {"id": "equality", "item": "exact"}),
+            se.encrypt_row({"id": "u3", "item": "phone"}, {"id": "equality", "item": "exact"}),
+            se.encrypt_row({"id": "u1", "item": "mouse"}, {"id": "equality", "item": "exact"}),
+        ]
+        pairs = ops.encrypted_join(users, orders, "id")
+        assert (0, 0) in pairs  # Alice -> laptop
+        assert (0, 2) in pairs  # Alice -> mouse
+        assert len([p for p in pairs if p[0] == 1]) == 0  # Bob has no orders
+
+    def test_group_by(self, db_ops):
+        """Encrypted GROUP BY groups matching keys."""
+        ops, se = db_ops
+        rows = [
+            se.encrypt_row({"dept": "eng", "name": "a"}, {"dept": "equality", "name": "equality"}),
+            se.encrypt_row({"dept": "sales", "name": "b"}, {"dept": "equality", "name": "equality"}),
+            se.encrypt_row({"dept": "eng", "name": "c"}, {"dept": "equality", "name": "equality"}),
+        ]
+        groups = ops.encrypted_group_by(rows, "dept")
+        assert len(groups) == 2  # eng and sales
+        # One group should have 2 members (eng), one should have 1 (sales)
+        sizes = sorted([len(v) for v in groups.values()])
+        assert sizes == [1, 2]
+
+    def test_dedup(self, db_ops):
+        """Encrypted deduplication finds unique rows."""
+        ops, se = db_ops
+        rows = [
+            se.encrypt_row({"email": "a@x.com"}, {"email": "equality"}),
+            se.encrypt_row({"email": "b@x.com"}, {"email": "equality"}),
+            se.encrypt_row({"email": "a@x.com"}, {"email": "equality"}),  # dup
+            se.encrypt_row({"email": "c@x.com"}, {"email": "equality"}),
+        ]
+        unique = ops.encrypted_dedup(rows, "email")
+        assert len(unique) == 3
+        assert 0 in unique
+        assert 1 in unique
+        assert 3 in unique
+        assert 2 not in unique  # duplicate
+
+    def test_check_unique_pass(self, db_ops):
+        """Uniqueness check passes when all values are different."""
+        ops, se = db_ops
+        rows = [
+            se.encrypt_row({"id": "a"}, {"id": "equality"}),
+            se.encrypt_row({"id": "b"}, {"id": "equality"}),
+            se.encrypt_row({"id": "c"}, {"id": "equality"}),
+        ]
+        assert ops.encrypted_check_unique(rows, "id") is True
+
+    def test_check_unique_fail(self, db_ops):
+        """Uniqueness check fails when values repeat."""
+        ops, se = db_ops
+        rows = [
+            se.encrypt_row({"id": "a"}, {"id": "equality"}),
+            se.encrypt_row({"id": "b"}, {"id": "equality"}),
+            se.encrypt_row({"id": "a"}, {"id": "equality"}),
+        ]
+        assert ops.encrypted_check_unique(rows, "id") is False
+
+    def test_check_foreign_key(self, db_ops):
+        """FK check finds violations."""
+        ops, se = db_ops
+        parents = [
+            se.encrypt_row({"id": "p1"}, {"id": "equality"}),
+            se.encrypt_row({"id": "p2"}, {"id": "equality"}),
+        ]
+        children = [
+            se.encrypt_row({"parent_id": "p1"}, {"parent_id": "equality"}),
+            se.encrypt_row({"parent_id": "p3"}, {"parent_id": "equality"}),  # violation
+            se.encrypt_row({"parent_id": "p2"}, {"parent_id": "equality"}),
+        ]
+        violations = ops.encrypted_check_foreign_key(children, "parent_id", parents, "id")
+        assert violations == [1]
+
+    def test_snapshot_diff(self, fhe):
+        """Snapshot diff detects changes."""
+        ops = EncryptedDBOps(fhe)
+        n = fhe.n
+        v1 = fhe.encrypt(torch.randint(0, 10, (n,), dtype=torch.float64))
+        v2 = fhe.encrypt(torch.randint(0, 10, (n,), dtype=torch.float64))
+
+        snap_a = [v1, v2]
+        snap_b = [v1, fhe.encrypt(torch.randint(0, 10, (n,), dtype=torch.float64))]
+
+        result = ops.encrypted_snapshot_diff(snap_a, snap_b)
+        assert result["same_count"] == 1  # v1 unchanged
+        assert len(result["changed_indices"]) == 1  # v2 changed
+        assert result["added"] == 0
+        assert result["removed"] == 0
+
+    def test_snapshot_diff_size_change(self, fhe):
+        """Snapshot diff detects added/removed vectors."""
+        ops = EncryptedDBOps(fhe)
+        n = fhe.n
+        snap_a = [fhe.encrypt(torch.randint(0, 10, (n,), dtype=torch.float64)) for _ in range(3)]
+        snap_b = snap_a[:2]  # removed one
+
+        result = ops.encrypted_snapshot_diff(snap_a, snap_b)
+        assert result["removed"] == 1
+
+    def test_aggregate_vectors(self, fhe):
+        """Encrypted vector aggregation sums correctly."""
+        ops = EncryptedDBOps(fhe)
+        n = fhe.n
+        t = fhe.t
+
+        vecs_plain = [torch.zeros(n, dtype=torch.float64) for _ in range(3)]
+        vecs_plain[0][0] = 5.0
+        vecs_plain[1][0] = 10.0
+        vecs_plain[2][0] = 15.0
+
+        cts = [fhe.encrypt(v) for v in vecs_plain]
+        ct_sum = ops.encrypted_aggregate_vectors(cts, op="sum")
+        result = fhe.decrypt(ct_sum)
+
+        expected = 30.0 % t
+        diff = abs(((result[0].item() - expected) % t + t / 2) % t - t / 2)
+        assert diff < 2
+
+    def test_no_se_raises(self, fhe):
+        """DB ops that need SearchableEncryption raise without it."""
+        ops = EncryptedDBOps(fhe, se=None)
+        with pytest.raises(RuntimeError, match="SearchableEncryption required"):
+            ops.encrypted_where_eq([], "f", "v")
+        with pytest.raises(RuntimeError, match="SearchableEncryption required"):
+            ops.encrypted_join([], [], "f")
+        with pytest.raises(RuntimeError, match="SearchableEncryption required"):
+            ops.encrypted_dedup([], "f")
+        with pytest.raises(RuntimeError, match="SearchableEncryption required"):
+            ops.encrypted_check_unique([], "f")

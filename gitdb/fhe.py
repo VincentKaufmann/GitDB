@@ -921,3 +921,229 @@ class EncryptedGitOps:
             result.append(merged)
 
         return result
+
+
+# ---------------------------------------------------------------------------
+# Encrypted Database Operations — SQL-style ops on encrypted data
+# ---------------------------------------------------------------------------
+
+class EncryptedDBOps:
+    """SQL-style database operations on encrypted data.
+
+    Every operation runs on ciphertext. The server executes queries,
+    joins, filters, and aggregations without ever seeing plaintext.
+
+    Combines FHE (for arithmetic on ciphertext) with SearchableEncryption
+    (for equality/range predicates on encrypted fields).
+    """
+
+    def __init__(self, fhe: FHEScheme, se: Optional[SearchableEncryption] = None):
+        self.fhe = fhe
+        self.se = se
+
+    # --- Encrypted WHERE / Filter ---
+
+    def encrypted_where_eq(self, rows: List[dict], field: str,
+                           value: Any) -> List[int]:
+        """Filter encrypted rows by equality on an encrypted field.
+
+        Requires SearchableEncryption. The field must be encrypted with
+        field_type="equality". Returns indices of matching rows.
+
+        Server learns WHICH rows match (by index) but not the field values.
+        """
+        if self.se is None:
+            raise RuntimeError("SearchableEncryption required for WHERE queries")
+        encrypted_target = self.se.encrypt_field(value, "equality")
+        matches = []
+        for i, row in enumerate(rows):
+            if field in row and self.se.match_equality(encrypted_target, row[field]):
+                matches.append(i)
+        return matches
+
+    def encrypted_where_range(self, rows: List[dict], field: str,
+                              op: str, value: Any) -> List[int]:
+        """Filter encrypted rows by range on an encrypted field.
+
+        Requires SearchableEncryption. The field must be encrypted with
+        field_type="range". op is one of: "gt", "gte", "lt", "lte".
+
+        Server learns WHICH rows match but not the actual values.
+        """
+        if self.se is None:
+            raise RuntimeError("SearchableEncryption required for WHERE queries")
+        encrypted_target = self.se.encrypt_field(value, "range")
+        matches = []
+        for i, row in enumerate(rows):
+            if field not in row:
+                continue
+            cmp = self.se.compare_range(row[field], encrypted_target)
+            if op == "gt" and cmp > 0:
+                matches.append(i)
+            elif op == "gte" and cmp >= 0:
+                matches.append(i)
+            elif op == "lt" and cmp < 0:
+                matches.append(i)
+            elif op == "lte" and cmp <= 0:
+                matches.append(i)
+        return matches
+
+    # --- Encrypted JOIN ---
+
+    def encrypted_join(self, table_a: List[dict], table_b: List[dict],
+                       key_field: str) -> List[Tuple[int, int]]:
+        """Inner join two encrypted tables on an equality-encrypted field.
+
+        Returns list of (index_a, index_b) pairs where the encrypted
+        key field matches. Server learns which rows join but not the
+        key values.
+        """
+        if self.se is None:
+            raise RuntimeError("SearchableEncryption required for JOIN")
+        pairs = []
+        for i, row_a in enumerate(table_a):
+            if key_field not in row_a:
+                continue
+            for j, row_b in enumerate(table_b):
+                if key_field not in row_b:
+                    continue
+                if self.se.match_equality(row_a[key_field], row_b[key_field]):
+                    pairs.append((i, j))
+        return pairs
+
+    # --- Encrypted GROUP BY + Aggregation ---
+
+    def encrypted_group_by(self, rows: List[dict], group_field: str
+                           ) -> Dict[bytes, List[int]]:
+        """Group encrypted rows by an equality-encrypted field.
+
+        Returns {encrypted_key: [row_indices]}. The server sees group
+        structure but not key values.
+        """
+        groups: Dict[bytes, List[int]] = {}
+        for i, row in enumerate(rows):
+            if group_field not in row:
+                continue
+            key = row[group_field]
+            if not isinstance(key, bytes):
+                key = bytes(key) if isinstance(key, (bytearray, memoryview)) else str(key).encode()
+            found = False
+            for gk in groups:
+                if self.se and self.se.match_equality(key, gk):
+                    groups[gk].append(i)
+                    found = True
+                    break
+            if not found:
+                groups[key] = [i]
+        return groups
+
+    def encrypted_aggregate_vectors(self, vectors: List[Tuple[torch.Tensor, torch.Tensor]],
+                                    op: str = "sum") -> Tuple[torch.Tensor, torch.Tensor]:
+        """Aggregate encrypted vectors: sum or count.
+
+        For "sum": homomorphic addition of all vectors.
+        For "count": caller divides by count after decrypt for mean.
+        """
+        if not vectors:
+            raise ValueError("Cannot aggregate empty list")
+        if op not in ("sum", "count"):
+            raise ValueError(f"op must be 'sum' or 'count', got {op}")
+        result = vectors[0]
+        for ct in vectors[1:]:
+            result = self.fhe.add(result, ct)
+        return result
+
+    # --- Encrypted Deduplication ---
+
+    def encrypted_dedup(self, rows: List[dict], key_field: str) -> List[int]:
+        """Find unique rows by equality-encrypted field.
+
+        Returns indices of the FIRST occurrence of each unique key.
+        Duplicates identified by HMAC equality match.
+        """
+        if self.se is None:
+            raise RuntimeError("SearchableEncryption required for dedup")
+        seen_keys: List[bytes] = []
+        unique_indices: List[int] = []
+        for i, row in enumerate(rows):
+            if key_field not in row:
+                unique_indices.append(i)
+                continue
+            key = row[key_field]
+            is_dup = False
+            for sk in seen_keys:
+                if self.se.match_equality(key, sk):
+                    is_dup = True
+                    break
+            if not is_dup:
+                seen_keys.append(key)
+                unique_indices.append(i)
+        return unique_indices
+
+    # --- Encrypted Constraint Validation ---
+
+    def encrypted_check_unique(self, rows: List[dict], field: str) -> bool:
+        """Check if an encrypted field has all unique values.
+
+        Returns False if any two rows have matching encrypted values.
+        """
+        if self.se is None:
+            raise RuntimeError("SearchableEncryption required for uniqueness check")
+        values = [row[field] for row in rows if field in row]
+        for i in range(len(values)):
+            for j in range(i + 1, len(values)):
+                if self.se.match_equality(values[i], values[j]):
+                    return False
+        return True
+
+    def encrypted_check_foreign_key(self, child_rows: List[dict], child_field: str,
+                                    parent_rows: List[dict], parent_field: str) -> List[int]:
+        """Check foreign key constraint on encrypted fields.
+
+        Returns indices of child rows that violate the FK constraint
+        (no matching parent).
+        """
+        if self.se is None:
+            raise RuntimeError("SearchableEncryption required for FK check")
+        parent_values = [row[parent_field] for row in parent_rows if parent_field in row]
+        violations = []
+        for i, row in enumerate(child_rows):
+            if child_field not in row:
+                continue
+            found = False
+            for pv in parent_values:
+                if self.se.match_equality(row[child_field], pv):
+                    found = True
+                    break
+            if not found:
+                violations.append(i)
+        return violations
+
+    # --- Encrypted Backup Verification ---
+
+    def encrypted_snapshot_diff(self, snapshot_a: List[Tuple[torch.Tensor, torch.Tensor]],
+                                snapshot_b: List[Tuple[torch.Tensor, torch.Tensor]]
+                                ) -> dict:
+        """Compare two encrypted snapshots (backups).
+
+        Returns dict with same_count, changed_indices, added, removed.
+        """
+        git_ops = EncryptedGitOps(self.fhe)
+        hash_a = [git_ops.encrypted_commit_hash(ct) for ct in snapshot_a]
+        hash_b = [git_ops.encrypted_commit_hash(ct) for ct in snapshot_b]
+
+        min_len = min(len(hash_a), len(hash_b))
+        same = 0
+        changed = []
+        for i in range(min_len):
+            if hash_a[i] == hash_b[i]:
+                same += 1
+            else:
+                changed.append(i)
+
+        return {
+            "same_count": same,
+            "changed_indices": changed,
+            "added": max(0, len(snapshot_b) - len(snapshot_a)),
+            "removed": max(0, len(snapshot_a) - len(snapshot_b)),
+        }
