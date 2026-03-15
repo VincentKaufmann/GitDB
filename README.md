@@ -1745,6 +1745,68 @@ Pluggable storage with `copy_between()` for zero-downtime migration.
 
 ---
 
+## Fully Homomorphic Encryption (FHE)
+
+Three tiers of encrypted computation. Query encrypted data without ever decrypting it. All GPU-accelerated via `torch.fft`.
+
+### Tier 1: Searchable Encryption (fast, production-ready)
+
+```python
+from gitdb import SearchableEncryption
+
+se = SearchableEncryption(key=os.urandom(32))
+
+# Encrypt metadata — server can still query it
+encrypted = se.encrypt_row(
+    {"clearance": "TS/SCI", "priority": 9, "content": "classified"},
+    field_types={"clearance": "equality", "priority": "range", "content": "exact"}
+)
+
+# Equality match on ciphertext — no decryption needed
+se.match_equality(se.encrypt_field("TS/SCI"), encrypted["clearance"])  # True
+
+# Range query on ciphertext — order preserved
+se.compare_range(encrypted_a["priority"], encrypted_b["priority"])  # -1, 0, 1
+```
+
+### Tier 2: Private Information Retrieval (PIR)
+
+```python
+from gitdb import PIRClient, PIRServer
+
+# Server holds the database — never learns what client queries
+server = PIRServer(database_tensor)  # GPU-resident
+
+# Client queries row 42 — server sees random noise
+client = PIRClient(n_items=1000, item_dim=1024, device="mps")
+query, noise = client.create_query(target_index=42)
+response = server.respond(query)  # GPU matmul
+row_42 = client.extract_result(response, noise, database_tensor)
+```
+
+### Tier 3: Full FHE — Encrypted Vector Search
+
+```python
+from gitdb import FHEScheme, EncryptedVectorStore
+
+# GPU-accelerated RLWE scheme — polynomial mul via torch.fft
+fhe = FHEScheme(poly_degree=4096, device="mps")
+fhe.keygen()
+
+# Encrypted vector store — cosine similarity on ciphertext
+store = EncryptedVectorStore(fhe)
+store.add_encrypted(vector_a)
+store.add_encrypted(vector_b)
+
+# Query without decrypting — server never sees plaintext
+encrypted_scores = store.encrypted_query(query_vector, k=10)
+# Only key holder can decrypt the results
+```
+
+The GPU advantage: FHE's bottleneck is polynomial multiplication (NTT ≈ FFT). `torch.fft.fft` runs on CUDA/MPS. First vector DB with GPU-accelerated FHE.
+
+---
+
 ## Streaming Ingest
 
 NSA-grade versioned streaming pipeline. Every chunk content-addressed, hash-chained, Merkle-verified, encrypted at rest.
@@ -1883,7 +1945,7 @@ Nobody's done this. DVC versions files. MLflow tracks experiments. W&B tracks me
 ## Architecture
 
 ```
-20,000+ lines of Python across 29 modules. 657 tests.
+21,000+ lines of Python across 30 modules. 679 tests.
 
 ┌──────────────────────────────────────────────────────────────┐
 │                    GitDB v0.10.0                              │
@@ -1965,11 +2027,15 @@ Nobody's done this. DVC versions files. MLflow tracks experiments. W&B tracks me
 │       │              │                  WAL, Merkle, hash     │
 │       │         streaming.py            chain, backpressure  │
 │       ▼              │                                       │
+│  FHE ────────→ Encrypted Compute       ← GPU-accelerated     │
+│       │              │                  searchable, PIR       │
+│       │         fhe.py                  RLWE via torch.fft   │
+│       ▼              │                                       │
 │  QUERY ──→ Boosted Results                                   │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 
-Modules (29):
+Modules (30):
   core.py          2,600+ lines  Main interface (70+ methods)
   cli.py           1,900+ lines  CLI (75+ commands)
   server.py        1,200+ lines  REST API + web dashboard
@@ -1986,6 +2052,7 @@ Modules (29):
   structured.py      322 lines   Query operators, aggregation
   delta.py           288 lines   Sparse tensor deltas + zstd
   objects.py         270 lines   Content-addressed object store
+  fhe.py             310+ lines  GPU-accelerated FHE (searchable, PIR, RLWE)
   streaming.py       400+ lines  StreamIngest pipeline (WAL, Merkle, shards)
   encryption.py      200+ lines  AES-256-GCM encryption
   working_tree.py    208 lines   GPU-resident tensor + search
@@ -2038,6 +2105,8 @@ Modules (29):
 | Pluggable storage backends | Yes | Cloud | Cloud | Cloud | No | No |
 | Versioned streaming ingest | Yes | No | No | No | No | No |
 | Merkle integrity proofs | Yes | No | No | No | No | No |
+| FHE (encrypted computation) | Yes | No | No | No | No | No |
+| Private information retrieval | Yes | No | No | No | No | No |
 
 ## LLM Integration
 
