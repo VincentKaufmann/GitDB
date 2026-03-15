@@ -1,6 +1,6 @@
 # GitDB
 
-GPU-accelerated version-controlled vector database. No server. No Docker. No config. `pip install gitdb` and go.
+GPU-accelerated version-controlled vector database. No server. No Docker. No config. `pip install gitdb-vectors` and go.
 
 ## Why GitDB
 
@@ -11,7 +11,7 @@ GPU-accelerated version-controlled vector database. No server. No Docker. No con
 5. **FoundationDB features** — hooks, transactions, watches, secondary indexes, schema enforcement. Enterprise-grade.
 6. **Spreading activation** — background semantic priming makes frequent queries instant. Multi-hop association chains emerge naturally.
 7. **CLI-first** — `gitdb init && gitdb add --text "doc" && gitdb commit -m "init"`. Works from terminal like git.
-8. **Embedded** — no server, no Docker, no config. `pip install gitdb` and go.
+8. **Embedded** — no server, no Docker, no config. `pip install gitdb-vectors` and go.
 
 Git for tensors. SQLite for metadata. Arctic/NV-EmbedQA for semantics. CEPH CRUSH placement. P2P distributed. FoundationDB-inspired hooks, transactions, watches, indexes, snapshots, schema enforcement. Native backup/restore. Universal ingest (SQLite, MongoDB, CSV, Parquet, PDF, text, S3, GCS, Azure, MinIO, SFTP).
 
